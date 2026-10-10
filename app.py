@@ -20,6 +20,7 @@ from sklearn.preprocessing import StandardScaler, LabelEncoder
 from sklearn.metrics import (accuracy_score, precision_score, recall_score,
                              f1_score, confusion_matrix, classification_report)
 
+# Page configuration
 st.set_page_config(
     page_title="Child Malnutrition Prediction Dashboard",
     page_icon=None,
@@ -77,21 +78,20 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-
+# WHO classification constants
 MALNOURISHED_CODES = {'UW', 'SUW', 'ST', 'SST', 'MW', 'SW'}
 NON_MALNOURISHED_CODES = {'N', 'OW', 'OB', 'T'}
-MISSING_TOKENS = {'', '—', '-', '--', 'N/A', 'NA', 'NAN', 'NONE', 'NULL', '?', '.', 'N.D.', 'ND'}
+MISSING_TOKENS = {'', '-', '--', 'N/A', 'NA', 'NAN', 'NONE', 'NULL', '?', '.', 'N.D.', 'ND'}
 EXPECTED_BARANGAYS = {
     'MAMBALILI', 'BUNAWAN BROOK', 'SAN TEODORO', 'POBLACION', 'CONSUELO',
     'SAN ANDRES', 'IMELDA', 'NUEVA ERA', 'SAN MARCOS', 'LIBERTAD',
     'HAGNAYA', 'BABADAN'
 }
-TARGET_RECORD_COUNT = 317  # Per Chapter 3
+TARGET_RECORD_COUNT = 317
 
-
+# Phase 1 - Load the OPT workbook
 @st.cache_data
 def load_data():
-    """Load OPT 2024 and OPT 2025 sheets from the Excel workbook."""
     search_paths = ['.', '/content/data']
     files = []
     for path in search_paths:
@@ -134,7 +134,7 @@ def load_data():
                         for j, c in enumerate(header_row):
                             c_str = str(c).replace('\n', ' ').strip()
                             if pd.isna(c) or c_str.lower() in ('nan', 'none', ''):
-                                c_str = f"col_{j}"
+                                c_str = "col_" + str(j)
                             new_cols.append(c_str)
                         body = sheet_df.iloc[header_idx + 1:].copy()
                         body.columns = new_cols
@@ -142,43 +142,32 @@ def load_data():
                         body['_source_sheet'] = s.strip()
                         all_sheets.append(body)
                     except Exception as e:
-                        st.warning(f"Could not read sheet '{s}': {e}")
+                        st.warning("Could not read sheet '" + str(s) + "': " + str(e))
                         continue
             if not all_sheets:
                 return None, None
             df = pd.concat(all_sheets, ignore_index=True, sort=False)
     except Exception as e:
-        st.error(f"Error reading {target_file}: {e}")
+        st.error("Error reading " + str(target_file) + ": " + str(e))
         return None, None
 
     return df, os.path.basename(target_file)
 
+# Cleaning pipeline
 def clean_data(df):
-    """Full cleaning pipeline:
-       1. Strip whitespace from columns and cell values
-       2. Normalize case for categorical values
-       3. Replace missing tokens with NaN
-       4. Remove non-record rows (e.g. TOTAL)
-       5. Drop fully empty rows/columns
-       6. Remove duplicate rows
-    Returns (cleaned_df, cleaning_report dict).
-    """
     report = {}
     df = df.copy()
     report['rows_initial'] = len(df)
     report['cols_initial'] = len(df.columns)
 
-    # 1. Clean column names
     df.columns = [str(c).strip().replace('\ufeff', '') for c in df.columns]
 
-    # 2. Strip whitespace from cell values and replace missing tokens
     for col in df.columns:
         if df[col].dtype == object:
             df[col] = df[col].astype(str).str.strip()
             df[col] = df[col].replace(list(MISSING_TOKENS), np.nan)
             df[col] = df[col].replace({'nan': np.nan, 'NaN': np.nan, 'None': np.nan})
 
-    # 3. Drop non-record rows (NO. column must be numeric)
     no_col = None
     for c in df.columns:
         if str(c).strip().upper() in ('NO.', 'NO'):
@@ -186,17 +175,15 @@ def clean_data(df):
             break
     if no_col:
         df['_no_numeric'] = pd.to_numeric(df[no_col], errors='coerce')
-        dropped_non_records = df['_no_numeric'].isna().sum()
+        dropped_non_records = int(df['_no_numeric'].isna().sum())
         df = df[df['_no_numeric'].notna()].copy()
         df = df.drop(columns=['_no_numeric'])
-        report['rows_dropped_non_records'] = int(dropped_non_records)
+        report['rows_dropped_non_records'] = dropped_non_records
     else:
         report['rows_dropped_non_records'] = 0
 
-    # 4. Drop fully empty rows and columns
     df = df.dropna(how='all').dropna(axis=1, how='all')
 
-    # 5. Remove duplicate rows (excluding source sheet metadata)
     meta_cols = [c for c in df.columns if c.startswith('_')]
     check_cols = [c for c in df.columns if c not in meta_cols]
     before_dupes = len(df)
@@ -208,25 +195,20 @@ def clean_data(df):
 
     return df, report
 
-
+# Fuzzy column lookup
 def find_col(df, *candidates):
-    """Fuzzy column lookup."""
-    cols_norm = {str(c).lower().replace(' ', '').replace('_', '').replace('-', ''): c
-                 for c in df.columns}
+    cols_norm = {}
+    for c in df.columns:
+        key = str(c).lower().replace(' ', '').replace('_', '').replace('-', '')
+        cols_norm[key] = c
     for cand in candidates:
         key = cand.lower().replace(' ', '').replace('_', '').replace('-', '')
         if key in cols_norm:
             return cols_norm[key]
     return None
 
-
+# Imputation and normalization
 def impute_and_prepare(df):
-    """Handle missing values and prepare features per Chapter 3:
-       - Anthropometric rows missing weight AND height -> dropped
-       - Continuous (age, weight, height) -> median imputation
-       - Categorical (sex, barangay) -> mode imputation
-    Returns (df_prepared, imputation_report).
-    """
     df = df.copy()
     rep = {}
 
@@ -239,12 +221,10 @@ def impute_and_prepare(df):
     haz_col = find_col(df, 'HEIGHT-FOR-AGE (HAZ)', 'HAZ')
     whz_col = find_col(df, 'WEIGHT-FOR-HEIGHT (WHZ)', 'WHZ')
 
-    # Convert numeric columns
     for col in [age_col, weight_col, height_col]:
         if col:
             df[col] = pd.to_numeric(df[col], errors='coerce')
 
-    # Drop rows missing BOTH weight and height
     if weight_col and height_col:
         before = len(df)
         df = df[~(df[weight_col].isna() & df[height_col].isna())].copy()
@@ -252,7 +232,6 @@ def impute_and_prepare(df):
     else:
         rep['rows_dropped_no_anthropometry'] = 0
 
-    # Drop rows missing nutritional status codes entirely
     if all([waz_col, haz_col, whz_col]):
         before = len(df)
         df = df[~(df[waz_col].isna() & df[haz_col].isna() & df[whz_col].isna())].copy()
@@ -260,7 +239,6 @@ def impute_and_prepare(df):
     else:
         rep['rows_dropped_no_status'] = 0
 
-    # Median imputation for continuous variables
     rep['median_imputed'] = {}
     for col, name in [(age_col, 'age_months'),
                       (weight_col, 'weight_kg'),
@@ -272,7 +250,6 @@ def impute_and_prepare(df):
                 df[col] = df[col].fillna(median_val)
             rep['median_imputed'][name] = n_missing
 
-    # Mode imputation for categorical variables
     rep['mode_imputed'] = {}
     for col, name in [(sex_col, 'sex'), (brgy_col, 'barangay')]:
         if col:
@@ -282,7 +259,6 @@ def impute_and_prepare(df):
                 df[col] = df[col].fillna(mode_val)
             rep['mode_imputed'][name] = n_missing
 
-    # Normalize categorical text (uppercase, stripped)
     if sex_col:
         df[sex_col] = df[sex_col].astype(str).str.strip().str.upper()
     if brgy_col:
@@ -290,10 +266,8 @@ def impute_and_prepare(df):
 
     return df, rep
 
-
+# Build binary target from WHO indicator codes
 def derive_malnutrition_label(df):
-    """Build binary target: 1 = Malnourished, 0 = Not Malnourished
-       (per WHO 2006 thresholds as recorded in WAZ/HAZ/WHZ columns)."""
     waz_col = find_col(df, 'WEIGHT-FOR-AGE (WAZ)', 'WAZ', 'weight-for-age')
     haz_col = find_col(df, 'HEIGHT-FOR-AGE (HAZ)', 'HAZ', 'height-for-age')
     whz_col = find_col(df, 'WEIGHT-FOR-HEIGHT (WHZ)', 'WHZ', 'weight-for-height')
@@ -311,9 +285,8 @@ def derive_malnutrition_label(df):
     y = df.apply(is_malnourished, axis=1)
     return y, waz_col, haz_col, whz_col
 
-
+# Build feature matrix and target vector
 def build_features(df):
-    """Build feature matrix and target vector."""
     df = df.copy()
     y_series, waz_col, haz_col, whz_col = derive_malnutrition_label(df)
     if y_series is None:
@@ -354,8 +327,8 @@ def build_features(df):
     df_clean = df_clean.reset_index(drop=True)
     return X, y, df_clean, waz_col, haz_col, whz_col
 
+# Train the four classifiers
 def train_models(X, y, test_size=0.2, random_state=42):
-    """Train 4 classifiers per Chapter 3."""
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=test_size, random_state=random_state, stratify=y
     )
@@ -384,7 +357,7 @@ def train_models(X, y, test_size=0.2, random_state=42):
 
     return results, scaler, X_train, X_test, y_train, y_test
 
-
+# Compute the four evaluation metrics
 def compute_metrics(y_true, y_pred):
     return {
         'Accuracy':  accuracy_score(y_true, y_pred),
@@ -393,7 +366,7 @@ def compute_metrics(y_true, y_pred):
         'F1-Score':  f1_score(y_true, y_pred, zero_division=0)
     }
 
-
+# Load and clean
 df_raw, filename = load_data()
 
 st.markdown('<div class="main-header">Child Malnutrition Prediction Dashboard</div>',
@@ -404,14 +377,12 @@ st.markdown('<div class="sub-header">Predictive Analysis of Child Malnutrition i
             unsafe_allow_html=True)
 
 if df_raw is None:
-    st.error("No dataset found. Please upload `nutritional-status-RHU-1.xlsx` to the repo root.")
+    st.error("No dataset found. Please upload nutritional-status-RHU-1.xlsx to the repo root.")
     st.stop()
 
-# --- Run cleaning pipeline ---
 df_cleaned, cleaning_report = clean_data(df_raw)
 df_prepared, imputation_report = impute_and_prepare(df_cleaned)
 
-# --- Build features and target ---
 X, y, df_clean, waz_col, haz_col, whz_col = build_features(df_prepared)
 
 if X is None or len(X) < 10:
@@ -419,8 +390,9 @@ if X is None or len(X) < 10:
              "SEX, AGE (Months), WEIGHT (kg), HEIGHT (cm), BARANGAY, and WAZ/HAZ/WHZ.")
     st.stop()
 
+# Sidebar controls
 st.sidebar.header("Model Configuration")
-st.sidebar.info(f"Total records after cleaning: {len(X)}")
+st.sidebar.info("Total records after cleaning: " + str(len(X)))
 
 available_features = list(X.columns)
 selected_features = st.sidebar.multiselect(
@@ -439,7 +411,6 @@ random_state = st.sidebar.number_input("Random state", value=42, step=1)
 
 X_sel = X[selected_features]
 
-# Train
 results, scaler, X_train, X_test, y_train, y_test = train_models(
     X_sel, y, test_size=test_size, random_state=int(random_state)
 )
@@ -449,12 +420,12 @@ metrics_table = pd.DataFrame({
     for name, r in results.items()
 }).T
 
-# Determine best model per Chapter 3: highest F1 AND Recall
 best_by_f1 = metrics_table['F1-Score'].idxmax()
 best_by_recall = metrics_table['Recall'].idxmax()
 metrics_table['F1+Recall'] = metrics_table['F1-Score'] + metrics_table['Recall']
 best_combined = metrics_table['F1+Recall'].idxmax()
 
+# Tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Phase 1 - Data Collection",
     "Phase 2-3 - Preprocessing & Features",
@@ -463,7 +434,7 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "Downloads"
 ])
 
-
+# Tab 1 - Phase 1
 with tab1:
     st.markdown('<div class="phase-header">Phase 1: Data Collection</div>',
                 unsafe_allow_html=True)
@@ -471,41 +442,42 @@ with tab1:
              "2024 and OPT 2025 records. Secondary data only; no primary collection.")
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(f'<div class="metric-card"><p>Loaded File</p>'
-                f'<h2 style="font-size:1rem;">{filename}</h2></div>',
+    c1.markdown('<div class="metric-card"><p>Loaded File</p>'
+                '<h2 style="font-size:1rem;">' + str(filename) + '</h2></div>',
                 unsafe_allow_html=True)
-    c2.markdown(f'<div class="metric-card"><p>Raw Records</p>'
-                f'<h2>{cleaning_report["rows_initial"]:,}</h2></div>',
+    c2.markdown('<div class="metric-card"><p>Raw Records</p>'
+                '<h2>' + str(cleaning_report["rows_initial"]) + '</h2></div>',
                 unsafe_allow_html=True)
-    c3.markdown(f'<div class="metric-card"><p>Records After Cleaning</p>'
-                f'<h2>{len(X):,}</h2></div>',
+    c3.markdown('<div class="metric-card"><p>Records After Cleaning</p>'
+                '<h2>' + str(len(X)) + '</h2></div>',
                 unsafe_allow_html=True)
-    c4.markdown(f'<div class="metric-card"><p>Target (Chapter 3)</p>'
-                f'<h2>{TARGET_RECORD_COUNT}</h2></div>',
+    c4.markdown('<div class="metric-card"><p>Target (Chapter 3)</p>'
+                '<h2>' + str(TARGET_RECORD_COUNT) + '</h2></div>',
                 unsafe_allow_html=True)
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Source Sheets")
     if '_source_sheet' in df_raw.columns:
         sheet_counts = df_raw['_source_sheet'].value_counts()
         st.dataframe(sheet_counts.rename('Records').to_frame(), use_container_width=True)
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Barangays Covered")
     brgy_col = find_col(df_prepared, 'BARANGAY')
     if brgy_col:
         brgy_counts = df_prepared[brgy_col].value_counts()
-        st.write(f"Distinct barangays detected: **{brgy_counts.nunique()}**")
+        st.write("Distinct barangays detected: " + str(brgy_counts.nunique()))
         st.dataframe(brgy_counts.rename('Records').to_frame(), use_container_width=True)
         missing_brgys = EXPECTED_BARANGAYS - set(brgy_counts.index)
         if missing_brgys:
-            st.warning(f"Barangays listed in Chapter 3 but not present in data: "
-                       f"{sorted(missing_brgys)}")
+            st.warning("Barangays listed in Chapter 3 but not present in data: "
+                       + str(sorted(missing_brgys)))
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Raw Data Preview (First 5 Records)")
     st.dataframe(df_raw.head(), use_container_width=True)
 
+# Tab 2 - Phase 2 and 3
 with tab2:
     st.markdown('<div class="phase-header">Phase 2: Data Preprocessing</div>',
                 unsafe_allow_html=True)
@@ -517,7 +489,7 @@ with tab2:
     c2.metric("Duplicate Rows Removed", cleaning_report['rows_dropped_duplicates'])
     c3.metric("Rows Kept After Cleaning", cleaning_report['rows_after_cleaning'])
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Missing Value Handling")
     col1, col2 = st.columns(2)
     with col1:
@@ -529,12 +501,12 @@ with tab2:
         st.dataframe(pd.DataFrame([imputation_report['mode_imputed']]).T.rename(
             columns={0: 'Missing Values Imputed'}), use_container_width=True)
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Anthropometric Records Dropped")
-    st.write(f"Records missing BOTH weight and height: "
-             f"**{imputation_report['rows_dropped_no_anthropometry']}**")
-    st.write(f"Records missing ALL three nutritional status codes: "
-             f"**{imputation_report['rows_dropped_no_status']}**")
+    st.write("Records missing BOTH weight and height: "
+             + str(imputation_report['rows_dropped_no_anthropometry']))
+    st.write("Records missing ALL three nutritional status codes: "
+             + str(imputation_report['rows_dropped_no_status']))
 
     st.markdown('<div class="phase-header">Phase 3: Feature Selection</div>',
                 unsafe_allow_html=True)
@@ -544,22 +516,21 @@ with tab2:
     c2.metric("Training Set (80%)", len(X_train))
     c3.metric("Testing Set (20%)", len(X_test))
 
-    st.write("**Predictor variables used:**")
+    st.write("Predictor variables used:")
     st.code(selected_features)
 
-    st.write("**Target variable:** `_malnourished`  "
-             "(1 = Malnourished, 0 = Not Malnourished)")
+    st.write("Target variable: _malnourished (1 = Malnourished, 0 = Not Malnourished)")
     st.write("Class distribution:")
     dist = y.value_counts().rename({0: 'Not Malnourished', 1: 'Malnourished'})
     st.dataframe(dist.rename('Count').to_frame().assign(
         Percentage=lambda d: (d['Count'] / d['Count'].sum() * 100).round(2)
     ), use_container_width=True)
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Encoded Feature Sample (First 5 Rows)")
     st.dataframe(X_sel.head(), use_container_width=True)
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Correlation Heatmap (Features + Target)")
     corr_data = X_sel.copy()
     corr_data['_target'] = y.values
@@ -570,15 +541,16 @@ with tab2:
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
----
+
+# Tab 3 - Phase 4 and 5
 with tab3:
     st.markdown('<div class="phase-header">Phase 4: Model Building</div>',
                 unsafe_allow_html=True)
     st.write("Four supervised classification algorithms trained on the 80% training split:")
-    st.markdown("- **Decision Tree** - interpretable rule-based classifier\n"
-                "- **Random Forest** - ensemble method\n"
-                "- **Naive Bayes** - probabilistic classifier\n"
-                "- **Logistic Regression** - binary baseline classifier")
+    st.markdown("- Decision Tree - interpretable rule-based classifier\n"
+                "- Random Forest - ensemble method\n"
+                "- Naive Bayes - probabilistic classifier\n"
+                "- Logistic Regression - binary baseline classifier")
 
     st.markdown('<div class="phase-header">Phase 5: Model Evaluation</div>',
                 unsafe_allow_html=True)
@@ -590,13 +562,13 @@ with tab3:
         use_container_width=True
     )
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Best Model Selection (per Chapter 3)")
-    st.info(f"Best by **F1-Score**: {best_by_f1}  |  "
-            f"Best by **Recall**: {best_by_recall}  |  "
-            f"Best by **combined F1 + Recall**: {best_combined}")
+    st.info("Best by F1-Score: " + str(best_by_f1) + "  |  "
+            "Best by Recall: " + str(best_by_recall) + "  |  "
+            "Best by combined F1 + Recall: " + str(best_combined))
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Confusion Matrices - All Algorithms")
     cols = st.columns(2)
     for i, (name, r) in enumerate(results.items()):
@@ -613,16 +585,16 @@ with tab3:
             st.pyplot(fig)
             plt.close()
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Detailed Classification Reports")
     for name, r in results.items():
-        with st.expander(f"{name} - Classification Report"):
+        with st.expander(name + " - Classification Report"):
             rep = classification_report(r['y_test'], r['y_pred'],
                                         target_names=['Not Malnourished', 'Malnourished'],
                                         output_dict=True, zero_division=0)
             st.dataframe(pd.DataFrame(rep).T.round(4), use_container_width=True)
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Cross-Validation (Stratified K-Fold)")
     k = st.slider("Number of folds", 3, 10, 5)
     X_scaled = StandardScaler().fit_transform(X_sel)
@@ -636,7 +608,7 @@ with tab3:
     cv_scores = {name: cross_val_score(model, X_scaled, y, cv=cv, scoring='accuracy')
                  for name, model in cv_models.items()}
     cv_df = pd.DataFrame(cv_scores)
-    cv_df.index = [f"Fold {i+1}" for i in range(k)]
+    cv_df.index = ["Fold " + str(i + 1) for i in range(k)]
     cv_df.loc['Mean'] = cv_df.mean()
     cv_df.loc['Std'] = cv_df.iloc[:-2].std()
     st.dataframe(cv_df.round(4), use_container_width=True)
@@ -645,7 +617,7 @@ with tab3:
     cv_df.iloc[:-2].plot(kind='bar', ax=ax,
                          color=['#2ecc71', '#3498db', '#f39c12', '#e74c3c'])
     ax.set_ylabel("Accuracy")
-    ax.set_title(f"{k}-Fold Cross-Validation Accuracy")
+    ax.set_title(str(k) + "-Fold Cross-Validation Accuracy")
     ax.legend(loc='lower right', ncol=4)
     ax.grid(axis='y', alpha=0.3)
     plt.xticks(rotation=0)
@@ -653,14 +625,14 @@ with tab3:
     st.pyplot(fig)
     plt.close()
 
-
+# Tab 4 - Phase 6
 with tab4:
     st.markdown('<div class="phase-header">Phase 6: Prediction and Analysis</div>',
                 unsafe_allow_html=True)
     st.write("Apply the best model to classify malnutrition risk, identify at-risk children "
              "per barangay, and interpret significant predictor variables.")
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Significant Predictor Variables (Feature Importance)")
 
     importance_data = {}
@@ -684,9 +656,9 @@ with tab4:
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
-        st.success(f"Top predictor across all models: {imp_df.index[0]}")
+        st.success("Top predictor across all models: " + str(imp_df.index[0]))
 
-    st.markdown("---")
+    st.divider()
     st.subheader("At-Risk Children per Barangay")
     st.write("Applying the best-performing model to the full cleaned dataset.")
 
@@ -701,6 +673,7 @@ with tab4:
     )
 
     brgy_col = find_col(pred_df, 'BARANGAY')
+    brgy_summary = None
     if brgy_col:
         brgy_summary = pred_df.groupby(brgy_col)['_predicted_risk'].agg(
             Total='count', At_Risk='sum'
@@ -718,13 +691,13 @@ with tab4:
             color=['#e74c3c', '#2ecc71']
         )
         ax.set_xlabel("Number of Children")
-        ax.set_title(f"Predicted Malnutrition Risk per Barangay ({best_combined})")
+        ax.set_title("Predicted Malnutrition Risk per Barangay (" + str(best_combined) + ")")
         ax.invert_yaxis()
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Predicted Labels - Sample Records")
     display_cols = [c for c in pred_df.columns if not c.startswith('_')]
     st.dataframe(
@@ -732,7 +705,7 @@ with tab4:
         use_container_width=True
     )
 
-    st.markdown("---")
+    st.divider()
     st.subheader("Predicted Risk Distribution")
     risk_counts = pred_df['_predicted_label'].value_counts()
     c1, c2 = st.columns([1, 1])
@@ -746,6 +719,7 @@ with tab4:
     with c2:
         st.dataframe(risk_counts.rename('Count').to_frame(), use_container_width=True)
 
+# Tab 5 - Downloads
 with tab5:
     st.header("Download Results")
 
@@ -755,21 +729,20 @@ with tab5:
 
     preds = pd.DataFrame({'Actual': y_test.map({0: 'Not Malnourished', 1: 'Malnourished'})})
     for name, r in results.items():
-        preds[f'{name} Predicted'] = pd.Series(r['y_pred']).map(
+        preds[name + ' Predicted'] = pd.Series(r['y_pred']).map(
             {0: 'Not Malnourished', 1: 'Malnourished'}
         )
     st.download_button("Download Test Set Predictions CSV",
                        preds.to_csv(index=False).encode('utf-8'),
                        "malnutrition_predictions.csv", "text/csv")
 
-    if brgy_col:
+    if brgy_summary is not None:
         st.download_button("Download Barangay Risk Summary CSV",
                            brgy_summary.to_csv().encode('utf-8'),
                            "barangay_risk_summary.csv", "text/csv")
 
-
 # Footer
-st.markdown("---")
+st.divider()
 st.caption("Capstone Dashboard | Predictive Analysis of Child Malnutrition in Bunawan, "
            "Agusan del Sur Using Data Mining Techniques | "
            "Simbajon, E.J.A. & Lumsad, J.B.O. | Agusan del Sur State University | 2026")
