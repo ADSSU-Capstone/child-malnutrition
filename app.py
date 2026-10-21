@@ -278,10 +278,15 @@ def train_all_models(X, y):
     for name, model in candidates.items():
         model.fit(X_train_scaled, y_train)
         y_pred = model.predict(X_test_scaled)
+        if hasattr(model, "predict_proba"):
+            y_proba = model.predict_proba(X_test_scaled)[:, 1]
+        else:
+            y_proba = y_pred.astype(float)
         trained[name] = {
             "model": model,
             "y_test": y_test,
             "y_pred": y_pred,
+            "y_proba": y_proba,
             "X_test": X_test_scaled,
         }
     return trained, scaler, X_train, X_test, y_train, y_test
@@ -343,6 +348,35 @@ metrics["F1+Recall"] = metrics["F1-Score"] + metrics["Recall"]
 best_combined = metrics["F1+Recall"].idxmax()
 best_f1 = metrics["F1-Score"].idxmax()
 best_recall = metrics["Recall"].idxmax()
+
+cv_folds = CONFIG["cv_folds"]
+scaled_features = StandardScaler().fit_transform(encoded)
+cv = StratifiedKFold(n_splits=cv_folds, shuffle=True,
+                     random_state=CONFIG["random_state"])
+cv_models = {
+    "Decision Tree": DecisionTreeClassifier(random_state=CONFIG["random_state"]),
+    "Random Forest": RandomForestClassifier(
+        n_estimators=200, random_state=CONFIG["random_state"]),
+    "Naive Bayes": GaussianNB(),
+    "Logistic Regression": LogisticRegression(
+        max_iter=2000, random_state=CONFIG["random_state"]),
+}
+cv_scores = {}
+for name, model in cv_models.items():
+    cv_scores[name] = cross_val_score(
+        model, scaled_features, labels, cv=cv, scoring="accuracy")
+cv_df = pd.DataFrame(cv_scores)
+cv_df.index = [f"Fold {i+1}" for i in range(cv_folds)]
+cv_df.loc["Mean"] = cv_df.mean()
+cv_df.loc["Std"] = cv_df.iloc[:-2].std()
+
+metrics_with_cv = metrics.copy()
+for name in metrics_with_cv.index:
+    mean_val = cv_scores[name].mean()
+    std_val = cv_scores[name].std()
+    metrics_with_cv.loc[name, "CV Accuracy (mean ± std)"] = (
+        f"{mean_val:.4f} ± {std_val:.4f}"
+    )
 
 st.title("Child Nutritional Status Dashboard")
 st.caption("Computed results from the Operation Timbang records")
@@ -409,6 +443,62 @@ with overview_tab:
     plt.tight_layout()
     st.pyplot(fig)
     plt.close()
+
+    st.subheader("Records by Year and Barangay")
+    if col_map["barangay"] and col_map["sheet"]:
+        crosstab = pd.crosstab(
+            filtered[col_map["sheet"]], filtered[col_map["barangay"]],
+            margins=True, margins_name="Total"
+        )
+        with st.expander("Records by sheet and barangay", expanded=True):
+            st.dataframe(crosstab, use_container_width=True)
+    elif col_map["sheet"]:
+        sheet_counts = filtered[col_map["sheet"]].value_counts()
+        st.dataframe(sheet_counts.rename("records").to_frame(),
+                     use_container_width=True)
+
+    st.subheader("Year-over-Year Malnourishment")
+    if col_map["sheet"]:
+        year_summary = (
+            filtered.groupby(col_map["sheet"])["malnourished"]
+            .agg(Total="count", Malnourished="sum")
+        )
+        year_summary["Not Malnourished"] = (
+            year_summary["Total"] - year_summary["Malnourished"])
+        year_summary["Malnourished %"] = (
+            year_summary["Malnourished"] /
+            year_summary["Total"].replace(0, np.nan) * 100
+        ).round(2)
+        with st.expander("Year-over-year malnourishment rates", expanded=True):
+            st.dataframe(year_summary, use_container_width=True)
+
+        fig, ax = plt.subplots(figsize=(8, 4))
+        plot_df = year_summary.reset_index().rename(columns={col_map["sheet"]: "Sheet"})
+        plot_df[["Malnourished", "Not Malnourished"]].plot(
+            kind="bar", stacked=True, ax=ax,
+            color=["#e74c3c", "#2ecc71"], edgecolor="black"
+        )
+        ax.set_xticklabels(plot_df["Sheet"].astype(str), rotation=0)
+        ax.set_ylabel("Children")
+        ax.set_title("Malnourishment count by OPT sheet")
+        plt.tight_layout()
+        st.pyplot(fig)
+        plt.close()
+
+        if len(year_summary) >= 2:
+            sheets = year_summary.index.tolist()
+            first = sheets[0]
+            last = sheets[-1]
+            delta = (year_summary.loc[last, "Malnourished %"] -
+                     year_summary.loc[first, "Malnourished %"])
+            st.write(
+                "malnourished share changed from " +
+                f"{year_summary.loc[first, 'Malnourished %']}% ({first}) " +
+                f"to {year_summary.loc[last, 'Malnourished %']}% ({last}); " +
+                f"difference of {delta:+.2f} percentage points."
+            )
+    else:
+        st.info("no sheet column detected")
 
     st.subheader("WHO Indicator Codes")
     indicator_cols = [col_map["waz"], col_map["haz"], col_map["whz"]]
@@ -523,10 +613,18 @@ with factors_tab:
         imp_df = pd.DataFrame(importance, index=encoded.columns)
         imp_df["Average"] = imp_df.mean(axis=1)
         imp_df = imp_df.sort_values("Average", ascending=False)
+
+        rank_df = imp_df.drop(columns="Average").rank(ascending=False, method="average")
+        imp_df["Consensus Rank"] = rank_df.mean(axis=1).round(2)
+        imp_df = imp_df.sort_values("Consensus Rank", ascending=True)
+
+        st.caption("tree importance and absolute logistic coefficients are not "
+                   "on a common scale; consensus rank is the mean of per-model ranks.")
         st.dataframe(imp_df.round(4), use_container_width=True)
 
         fig, ax = plt.subplots(figsize=(10, max(4, len(imp_df) * 0.45)))
-        imp_df.drop(columns="Average").plot(kind="barh", ax=ax)
+        plot_df = imp_df.drop(columns=["Average", "Consensus Rank"])
+        plot_df.plot(kind="barh", ax=ax)
         ax.set_xlabel("Importance or absolute coefficient")
         ax.invert_yaxis()
         ax.set_title("Per-variable importance by model")
@@ -534,15 +632,18 @@ with factors_tab:
         st.pyplot(fig)
         plt.close()
 
+        top_name = imp_df.index[0]
         st.write(
-            "highest average importance: " + str(imp_df.index[0]) +
-            " with a mean score of " + f"{imp_df['Average'].iloc[0]:.4f}.")
+            "highest consensus importance: " + str(top_name) +
+            " with mean rank " + f"{imp_df.loc[top_name, 'Consensus Rank']:.2f}.")
     else:
         st.info("no importance-computable model was trained")
 
 with evaluation_tab:
     st.subheader("Test-Set Performance")
-    display_metrics = metrics.drop(columns="F1+Recall").round(4)
+    st.caption("point estimates come from a single stratified 80/20 split; "
+               "the last column reports cross-validation accuracy mean ± std.")
+    display_metrics = metrics_with_cv.drop(columns="F1+Recall").round(4)
     st.dataframe(
         display_metrics.style.highlight_max(axis=0, color="#c6efce"),
         use_container_width=True
@@ -556,6 +657,10 @@ with evaluation_tab:
               f"{metrics.loc[best_recall, 'Recall']:.4f}")
     c3.metric("Highest F1 + Recall", best_combined,
               f"{metrics.loc[best_combined, 'F1+Recall']:.4f}")
+
+    st.caption("best-model selection uses combined F1 + Recall, per the "
+               "screening-oriented evaluation; a precision-first policy "
+               "would reorder the candidates.")
 
     st.subheader("Confusion Matrices")
     pair_cols = st.columns(2)
@@ -584,43 +689,67 @@ with evaluation_tab:
             st.dataframe(pd.DataFrame(report).T.round(4),
                          use_container_width=True)
 
-    st.subheader("Cross-Validation Accuracy")
-    scaled_features = StandardScaler().fit_transform(encoded)
-    cv = StratifiedKFold(n_splits=CONFIG["cv_folds"], shuffle=True,
-                        random_state=CONFIG["random_state"])
-    cv_models = {
-        "Decision Tree": DecisionTreeClassifier(random_state=CONFIG["random_state"]),
-        "Random Forest": RandomForestClassifier(
-            n_estimators=200, random_state=CONFIG["random_state"]),
-        "Naive Bayes": GaussianNB(),
-        "Logistic Regression": LogisticRegression(
-            max_iter=2000, random_state=CONFIG["random_state"]),
-    }
-    cv_scores = {}
-    for name, model in cv_models.items():
-        cv_scores[name] = cross_val_score(
-            model, scaled_features, labels, cv=cv, scoring="accuracy")
-    cv_df = pd.DataFrame(cv_scores)
-    cv_df.index = [f"Fold {i+1}" for i in range(CONFIG["cv_folds"])]
-    cv_df.loc["Mean"] = cv_df.mean()
-    cv_df.loc["Std"] = cv_df.iloc[:-2].std()
-    st.dataframe(cv_df.round(4), use_container_width=True)
+    st.subheader("Recall by Barangay (Test Set)")
+    if col_map["barangay"]:
+        test_rows = X_test.index.tolist()
+        test_barangays = encoded.iloc[test_rows]["barangay"].values \
+            if "barangay" in encoded.columns else None
+        if test_barangays is not None:
+            recall_records = []
+            for name, r in trained.items():
+                df_te = pd.DataFrame({
+                    "barangay_code": test_barangays,
+                    "y_true": r["y_test"].values,
+                    "y_pred": r["y_pred"],
+                })
+                for brgy_code, group in df_te.groupby("barangay_code"):
+                    pos_mask = group["y_true"] == 1
+                    if pos_mask.sum() == 0:
+                        recall_val = np.nan
+                    else:
+                        recall_val = (
+                            (group.loc[pos_mask, "y_pred"] == 1).sum()
+                            / pos_mask.sum()
+                        )
+                    recall_records.append({
+                        "Model": name,
+                        "Barangay Code": brgy_code,
+                        "Positives": int(pos_mask.sum()),
+                        "Recall": round(float(recall_val), 4) if not pd.isna(recall_val) else "n/a",
+                    })
+            recall_df = pd.DataFrame(recall_records)
+            with st.expander("per-barangay recall on the held-out test set"):
+                st.dataframe(recall_df, use_container_width=True)
+    else:
+        st.info("barangay column not detected; per-barangay recall not available")
 
-    mean_lines = " | ".join(
-        f"{n}: {s.mean():.4f} +/- {s.std():.4f}" for n, s in cv_scores.items()
-    )
-    st.write("mean cross-validation accuracy - " + mean_lines)
+    st.subheader("Cross-Validation Accuracy")
+    with st.expander("fold-by-fold cross-validation accuracy", expanded=True):
+        st.dataframe(cv_df.round(4), use_container_width=True)
+        mean_lines = " | ".join(
+            f"{n}: {s.mean():.4f} ± {s.std():.4f}"
+            for n, s in cv_scores.items()
+        )
+        st.write("mean cross-validation accuracy - " + mean_lines)
 
 with decision_tab:
     st.subheader("Predicted Risk per Barangay")
     best_model = trained[best_combined]["model"]
     full_matrix = scaler.transform(encoded)
-    full_pred = best_model.predict(full_matrix)
+    if hasattr(best_model, "predict_proba"):
+        full_proba = best_model.predict_proba(full_matrix)[:, 1]
+    else:
+        full_proba = best_model.predict(full_matrix).astype(float)
+    full_pred = (full_proba >= 0.5).astype(int)
 
     scored = df_model.copy()
+    scored["risk_probability"] = full_proba
     scored["predicted_risk"] = full_pred
     scored["predicted_label"] = scored["predicted_risk"].map(
         {1: "At Risk", 0: "Not At Risk"})
+
+    st.caption("risk_probability is the model's estimated probability of "
+               "malnourishment; the binary label uses a 0.50 threshold.")
 
     if col_map["barangay"]:
         risk_summary = (
@@ -633,26 +762,31 @@ with decision_tab:
             risk_summary["At_Risk"] /
             risk_summary["Total"].replace(0, np.nan) * 100
         ).round(2)
-        risk_summary = risk_summary.sort_values("At Risk %", ascending=False)
-        st.dataframe(risk_summary, use_container_width=True)
+        mean_prob = (
+            scored.groupby(col_map["barangay"])["risk_probability"].mean().round(4)
+        )
+        risk_summary["Mean Probability"] = mean_prob
+        risk_summary = risk_summary.sort_values(
+            "Mean Probability", ascending=False)
+        with st.expander("predicted at-risk children per barangay"):
+            st.dataframe(risk_summary, use_container_width=True)
 
         fig, ax = plt.subplots(figsize=(10, max(4, len(risk_summary) * 0.45)))
-        plot_df = risk_summary.sort_values("At Risk %", ascending=True)
-        ax.barh(plot_df.index, plot_df["At Risk %"], color="#e67e22")
-        ax.set_xlabel("Predicted at-risk share (%)")
-        ax.set_title("Predicted at-risk children per barangay (" +
+        plot_df = risk_summary.sort_values("Mean Probability", ascending=True)
+        ax.barh(plot_df.index, plot_df["Mean Probability"], color="#e67e22")
+        ax.set_xlabel("Mean predicted probability of malnourishment")
+        ax.set_title("Predicted probability of malnourishment per barangay (" +
                      best_combined + ")")
-        for i, v in enumerate(plot_df["At Risk %"].values):
-            ax.text(v + 0.4, i, f"{v:.1f}%", va="center", fontsize=9)
         plt.tight_layout()
         st.pyplot(fig)
         plt.close()
 
-        st.write(
-            "highest predicted at-risk share in " +
-            str(risk_summary.index[0]) + " at " +
-            str(risk_summary.loc[risk_summary.index[0], "At Risk %"]) + "%; " +
-            "best model for scoring is " + best_combined + ".")
+        if len(risk_summary) > 0:
+            top = risk_summary.index[0]
+            st.write(
+                "highest mean predicted probability in " + str(top) +
+                " at " + f"{risk_summary.loc[top, 'Mean Probability']:.4f}; " +
+                "best model for scoring is " + best_combined + ".")
 
     st.subheader("Predicted Risk Distribution")
     dist = scored["predicted_label"].value_counts()
@@ -674,10 +808,22 @@ with decision_tab:
         if col_map[key]:
             show_cols.append(col_map[key])
     if show_cols:
-        st.dataframe(
-            scored[show_cols + ["malnourished", "predicted_label"]].head(20),
-            use_container_width=True
+        view = scored[show_cols + ["malnourished", "risk_probability",
+                                   "predicted_label"]].sort_values(
+            "risk_probability", ascending=False
         )
+        with st.expander("highest predicted risk records first", expanded=True):
+            st.dataframe(view.head(20), use_container_width=True)
+
+    st.subheader("Downloads")
+    export_cols = show_cols + ["malnourished", "risk_probability", "predicted_label"]
+    export = scored[export_cols].copy()
+    st.download_button(
+        "Download per-child predictions CSV",
+        export.to_csv(index=False).encode("utf-8"),
+        "per_child_predictions.csv",
+        "text/csv"
+    )
 
 st.caption("model scores - " + " | ".join(
     f"{name}: F1 {metrics.loc[name, 'F1-Score']:.4f}, "
