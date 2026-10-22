@@ -22,7 +22,7 @@ from sklearn.metrics import (accuracy_score, precision_score, recall_score,
                              f1_score, confusion_matrix, classification_report)
 
 st.set_page_config(
-    page_title="Child Nutritional Status Dashboard",
+    page_title="Predictive Analysis of Child Malnutrition",
     page_icon=None,
     layout="wide",
     initial_sidebar_state="expanded"
@@ -31,17 +31,17 @@ st.set_page_config(
 st.markdown("""
 <style>
 :root {
-    --brand: #1f4e79;
-    --brand-soft: #eaf1f8;
-    --accent: #c0392b;
-    --accent-soft: #fdecea;
-    --success: #1e8449;
-    --success-soft: #e8f6ee;
-    --ink: #1c2733;
-    --muted: #5a6b7b;
-    --line: #dbe4ec;
-    --card: #ffffff;
-    --bg: #f7fafc;
+    --brand: #0D9488;
+    --brand-soft: #CCFBF1;
+    --accent: #EA580C;
+    --accent-soft: #FFEDD5;
+    --success: #10B981;
+    --success-soft: #D1FAE5;
+    --ink: #1E293B;
+    --muted: #64748B;
+    --line: #E2E8F0;
+    --card: #FFFFFF;
+    --bg: #F8FAFC;
 }
 
 html, body, [class*="css"] {
@@ -85,41 +85,60 @@ h3 {
 }
 
 .app-header {
-    padding: 1.4rem 1.6rem;
-    background: linear-gradient(120deg, #1f4e79 0%, #2e6ba8 100%);
+    padding: 1.6rem 2rem;
+    background: linear-gradient(135deg, #0F766E 0%, #14B8A6 100%);
     color: #ffffff;
-    border-radius: 14px;
-    margin-bottom: 1.8rem;
-    box-shadow: 0 4px 16px rgba(31, 78, 121, 0.18);
+    border-radius: 16px;
+    margin-bottom: 2rem;
+    box-shadow: 0 4px 20px rgba(13, 148, 136, 0.25);
+    position: relative;
+    overflow: hidden;
+}
+.app-header::after {
+    content: "";
+    position: absolute;
+    top: -50%;
+    right: -10%;
+    width: 300px;
+    height: 300px;
+    background: rgba(255,255,255,0.1);
+    border-radius: 50%;
+    pointer-events: none;
 }
 .app-header .title {
-    font-size: 1.65rem;
+    font-size: 1.85rem;
     font-weight: 700;
-    letter-spacing: -0.015em;
+    letter-spacing: -0.02em;
     margin: 0;
+    position: relative;
+    z-index: 1;
 }
 .app-header .subtitle {
-    font-size: 0.95rem;
-    opacity: 0.85;
-    margin-top: 0.25rem;
+    font-size: 1rem;
+    opacity: 0.9;
+    margin-top: 0.4rem;
+    font-weight: 400;
+    position: relative;
+    z-index: 1;
 }
 
 .kpi-row {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
-    gap: 1rem;
-    margin-bottom: 1.5rem;
+    gap: 1.2rem;
+    margin-bottom: 1.8rem;
 }
 .kpi-card {
     background: var(--card);
     border-radius: 12px;
-    padding: 1.1rem 1.2rem;
+    padding: 1.2rem 1.4rem;
     border: 1px solid var(--line);
-    box-shadow: 0 1px 3px rgba(15, 30, 45, 0.04);
-    transition: box-shadow 0.15s ease;
+    box-shadow: 0 2px 8px rgba(15, 30, 45, 0.03);
+    transition: all 0.2s ease;
 }
 .kpi-card:hover {
-    box-shadow: 0 4px 12px rgba(15, 30, 45, 0.08);
+    box-shadow: 0 6px 16px rgba(15, 30, 45, 0.08);
+    transform: translateY(-2px);
 }
 .kpi-card .label {
     font-size: 0.75rem;
@@ -127,10 +146,10 @@ h3 {
     letter-spacing: 0.06em;
     color: var(--muted);
     font-weight: 600;
-    margin-bottom: 0.35rem;
+    margin-bottom: 0.4rem;
 }
 .kpi-card .value {
-    font-size: 1.8rem;
+    font-size: 2rem;
     font-weight: 700;
     color: var(--brand);
     line-height: 1.1;
@@ -140,12 +159,12 @@ h3 {
 .kpi-card .caption {
     font-size: 0.8rem;
     color: var(--muted);
-    margin-top: 0.3rem;
+    margin-top: 0.4rem;
 }
 
 .pill {
     display: inline-block;
-    padding: 0.2rem 0.7rem;
+    padding: 0.25rem 0.8rem;
     border-radius: 999px;
     font-size: 0.78rem;
     font-weight: 600;
@@ -157,12 +176,12 @@ h3 {
 
 .insight {
     background: var(--brand-soft);
-    border-left: 3px solid var(--brand);
-    padding: 0.7rem 1rem;
-    border-radius: 6px;
+    border-left: 4px solid var(--brand);
+    padding: 0.8rem 1.2rem;
+    border-radius: 4px 8px 8px 4px;
     font-size: 0.9rem;
     color: var(--ink);
-    margin: 0.75rem 0 1rem 0;
+    margin: 1rem 0 1.5rem 0;
 }
 
 [data-testid="stSidebar"] {
@@ -179,25 +198,32 @@ h3 {
 }
 
 .stTabs [data-baseweb="tab-list"] {
-    gap: 4px;
+    gap: 8px;
     background: transparent;
-    border-bottom: 2px solid var(--line);
+    border-bottom: none;
     padding: 0;
 }
 .stTabs [data-baseweb="tab"] {
-    background: transparent;
-    border-radius: 0;
-    padding: 10px 16px;
+    background: #F1F5F9;
+    border: 1px solid #E2E8F0;
+    border-radius: 8px 8px 0 0;
+    padding: 10px 20px;
     font-weight: 600;
     font-size: 0.9rem;
     color: var(--muted);
-    border-bottom: 2px solid transparent;
-    margin-bottom: -2px;
+    margin-bottom: 0;
+    transition: all 0.2s ease;
+}
+.stTabs [data-baseweb="tab"]:hover {
+    background: #E2E8F0;
+    color: var(--ink);
 }
 .stTabs [aria-selected="true"] {
-    background: transparent !important;
+    background: #FFFFFF !important;
     color: var(--brand) !important;
+    border: 1px solid #E2E8F0;
     border-bottom: 2px solid var(--brand) !important;
+    box-shadow: 0 -2px 6px rgba(0,0,0,0.02);
 }
 
 [data-testid="stDataFrame"] {
@@ -223,10 +249,11 @@ div[data-testid="stExpander"] {
     border: none;
     border-radius: 8px;
     font-weight: 600;
-    padding: 0.5rem 1rem;
+    padding: 0.5rem 1.2rem;
+    transition: background 0.2s ease;
 }
 .stButton>button:hover, .stDownloadButton>button:hover {
-    background: #17405f;
+    background: #0F766E;
     color: #fff;
 }
 
@@ -242,31 +269,31 @@ div[data-testid="stExpander"] {
 """, unsafe_allow_html=True)
 
 plt.rcParams.update({
-    "axes.edgecolor": "#cbd5df",
-    "axes.labelcolor": "#5a6b7b",
+    "axes.edgecolor": "#CBD5E1",
+    "axes.labelcolor": "#64748B",
     "axes.titlesize": 11,
     "axes.titleweight": "600",
-    "axes.titlecolor": "#1c2733",
+    "axes.titlecolor": "#1E293B",
     "axes.grid": False,
     "axes.spines.top": False,
     "axes.spines.right": False,
-    "xtick.color": "#5a6b7b",
-    "ytick.color": "#5a6b7b",
+    "xtick.color": "#64748B",
+    "ytick.color": "#64748B",
     "font.size": 9.5,
-    "figure.facecolor": "#ffffff",
-    "savefig.facecolor": "#ffffff",
+    "figure.facecolor": "#FFFFFF",
+    "savefig.facecolor": "#FFFFFF",
 })
 
 PALETTE = {
-    "brand": "#1f4e79",
-    "brand_light": "#2e6ba8",
-    "accent": "#c0392b",
-    "accent_soft": "#e67e73",
-    "success": "#1e8449",
-    "success_soft": "#54b87a",
-    "warning": "#d68910",
-    "neutral": "#7f8c8d",
-    "series": ["#1f4e79", "#2e6ba8", "#5499c7", "#a9cce3"],
+    "brand": "#0D9488",
+    "brand_light": "#14B8A6",
+    "accent": "#EA580C",
+    "accent_soft": "#FB923C",
+    "success": "#10B981",
+    "success_soft": "#34D399",
+    "warning": "#F59E0B",
+    "neutral": "#94A3B8",
+    "series": ["#0D9488", "#14B8A6", "#5EEAD4", "#99F6E4"],
 }
 
 CONFIG = {
@@ -659,8 +686,8 @@ for name in metrics_with_cv.index:
 
 st.markdown(
     '<div class="app-header">'
-    '<div class="title">Child Nutritional Status Dashboard</div>'
-    '<div class="subtitle">Computed results from the Operation Timbang records</div>'
+    '<div class="title">Predictive Analysis of Child Malnutrition in Bunawan, Agusan del Sur</div>'
+    '<div class="subtitle">Data-driven insights and predictive modeling using Operation Timbang records</div>'
     '</div>',
     unsafe_allow_html=True
 )
@@ -717,7 +744,7 @@ with overview_tab:
         ("Malnourished share", f"{share}%", "of filtered records", "accent"),
     ])
 
-    st.markdown("## Distribution of Nutritional Status")
+    st.markdown("## Nutritional Status Distribution")
     col_a, col_b = st.columns([3, 2])
     with col_a:
         fig, ax = plt.subplots(figsize=(6, 3.4))
@@ -834,7 +861,7 @@ with brgy_tab:
                        color=PALETTE["brand"], height=0.65)
         for bar, v in zip(bars, plot_df["Malnourished %"].values):
             ax.text(bar.get_width() + 0.4, bar.get_y() + bar.get_height() / 2,
-                    f"{v:.1f}%", va="center", fontsize=9, color="#5a6b7b")
+                    f"{v:.1f}%", va="center", fontsize=9, color="#64748B")
         ax.set_xlabel("Malnourished share (%)")
         ax.set_xlim(0, max(plot_df["Malnourished %"].max() * 1.25, 10))
         plt.tight_layout()
@@ -957,7 +984,7 @@ with evaluation_tab:
                "the last column reports cross-validation accuracy mean ± std.")
     display_metrics = metrics_with_cv.drop(columns="F1+Recall").round(4)
     st.dataframe(
-        display_metrics.style.highlight_max(axis=0, color="#d4ede0"),
+        display_metrics.style.highlight_max(axis=0, color="#CCFBF1"),
         use_container_width=True
     )
 
@@ -1001,7 +1028,7 @@ with evaluation_tab:
         with pair_cols[i % 2]:
             cm = confusion_matrix(r["y_test"], r["y_pred"], labels=[0, 1])
             fig, ax = plt.subplots(figsize=(4.2, 3.4))
-            sns.heatmap(cm, annot=True, fmt="d", cmap="Blues",
+            sns.heatmap(cm, annot=True, fmt="d", cmap="GnBu",
                         xticklabels=["Not Mal.", "Mal."],
                         yticklabels=["Not Mal.", "Mal."], ax=ax,
                         cbar=False, annot_kws={"fontsize": 12, "fontweight": "600"})
@@ -1112,7 +1139,7 @@ with decision_tab:
                        color=PALETTE["warning"], height=0.65)
         for bar, v in zip(bars, plot_df["Mean Probability"].values):
             ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
-                    f"{v:.3f}", va="center", fontsize=9, color="#5a6b7b")
+                    f"{v:.3f}", va="center", fontsize=9, color="#64748B")
         ax.set_xlabel("Mean predicted probability")
         plt.tight_layout()
         st.pyplot(fig)
@@ -1137,7 +1164,7 @@ with decision_tab:
                colors=[PALETTE["accent"], PALETTE["success"]][:len(dist)],
                startangle=90,
                wedgeprops=dict(width=0.42, edgecolor="white", linewidth=2),
-               textprops=dict(color="#1c2733", fontsize=9))
+               textprops=dict(color="#1E293B", fontsize=9))
         ax.set_title("Predicted nutritional risk")
         plt.tight_layout()
         st.pyplot(fig)
@@ -1179,4 +1206,4 @@ st.markdown(
     )
     + '</div>',
     unsafe_allow_html=True
-  )
+)
