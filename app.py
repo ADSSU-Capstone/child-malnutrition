@@ -355,24 +355,9 @@ def find_col(df, *candidates):
     return None
 
 
-def read_all_sheets():
-    files = []
-    for path in CONFIG["search_paths"]:
-        if os.path.isdir(path):
-            files.extend(glob.glob(os.path.join(path, "*.xlsx")))
-            files.extend(glob.glob(os.path.join(path, "*.xls")))
-            files.extend(glob.glob(os.path.join(path, "*.csv")))
-    if not files:
-        return None, None
-    preferred = [f for f in files
-                 if any(k in os.path.basename(f).lower() for k in CONFIG["file_hints"])]
-    target = preferred[0] if preferred else files[0]
+def process_excel_source(source, is_uploaded=False):
     try:
-        if target.lower().endswith(".csv"):
-            df = pd.read_csv(target, encoding="utf-8-sig", low_memory=False)
-            df["_source_sheet"] = "unknown"
-            return df, os.path.basename(target)
-        book = pd.ExcelFile(target)
+        book = pd.ExcelFile(source)
         collected = []
         for sheet in book.sheet_names:
             if not any(k in sheet.lower() for k in CONFIG["sheet_includes"]):
@@ -399,10 +384,47 @@ def read_all_sheets():
             collected.append(body)
         if not collected:
             return None, None
-        return pd.concat(collected, ignore_index=True, sort=False), os.path.basename(target)
+        filename = source.name if is_uploaded else os.path.basename(source)
+        return pd.concat(collected, ignore_index=True, sort=False), filename
     except Exception as exc:
         st.error("could not read workbook: " + strip_display(exc))
         return None, None
+
+
+def load_data(uploaded_file, use_example):
+    if uploaded_file is not None:
+        if uploaded_file.name.lower().endswith(".csv"):
+            try:
+                df = pd.read_csv(uploaded_file, encoding="utf-8-sig", low_memory=False)
+                df["_source_sheet"] = "uploaded_csv"
+                return df, uploaded_file.name
+            except Exception as e:
+                st.error(f"Error reading CSV: {e}")
+                return None, None
+        else:
+            return process_excel_source(uploaded_file, is_uploaded=True)
+    elif use_example:
+        files = []
+        for path in CONFIG["search_paths"]:
+            if os.path.isdir(path):
+                files.extend(glob.glob(os.path.join(path, "*.xlsx")))
+                files.extend(glob.glob(os.path.join(path, "*.xls")))
+                files.extend(glob.glob(os.path.join(path, "*.csv")))
+        if not files:
+            return None, None
+        preferred = [f for f in files if any(k in os.path.basename(f).lower() for k in CONFIG["file_hints"])]
+        target = preferred[0] if preferred else files[0]
+        if target.lower().endswith(".csv"):
+            try:
+                df = pd.read_csv(target, encoding="utf-8-sig", low_memory=False)
+                df["_source_sheet"] = "unknown"
+                return df, os.path.basename(target)
+            except Exception as e:
+                st.error(f"Error reading example CSV: {e}")
+                return None, None
+        else:
+            return process_excel_source(target, is_uploaded=False)
+    return None, None
 
 
 def normalize_text_columns(df):
@@ -608,10 +630,15 @@ def insight(text):
     st.markdown(f'<div class="insight">{text}</div>', unsafe_allow_html=True)
 
 
-raw_df, loaded_file = read_all_sheets()
+with st.sidebar:
+    st.markdown("## Data Source")
+    uploaded_file = st.file_uploader("Upload OPT dataset", type=["csv", "xlsx", "xls"])
+    use_example = st.checkbox("Use example dataset (if no upload)", value=False)
+
+raw_df, loaded_file = load_data(uploaded_file, use_example)
 
 if raw_df is None:
-    st.error("no workbook found in the project directory")
+    st.info("Awaiting data source. Please upload an OPT dataset file (CSV/Excel) or check the 'Use example dataset' box in the sidebar.")
     st.stop()
 
 df = clean_columns(raw_df)
