@@ -11,15 +11,19 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import seaborn as sns
+import plotly.express as px
+import plotly.graph_objects as go
 
 from sklearn.tree import DecisionTreeClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.naive_bayes import GaussianNB
 from sklearn.linear_model import LogisticRegression
-from sklearn.model_selection import train_test_split, StratifiedKFold, cross_val_score
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.cluster import KMeans
 from sklearn.metrics import (accuracy_score, precision_score, recall_score,
-                             f1_score, confusion_matrix, classification_report)
+                             f1_score, confusion_matrix, classification_report,
+                             roc_curve, auc)
 
 st.set_page_config(
     page_title="Predictive Analysis of Child Malnutrition",
@@ -122,58 +126,6 @@ h3 {
     z-index: 1;
 }
 
-.kpi-row {
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
-    gap: 1.2rem;
-    margin-bottom: 1.8rem;
-}
-.kpi-card {
-    background: var(--card);
-    border-radius: 12px;
-    padding: 1.2rem 1.4rem;
-    border: 1px solid var(--line);
-    box-shadow: 0 2px 8px rgba(15, 30, 45, 0.03);
-    transition: all 0.2s ease;
-}
-.kpi-card:hover {
-    box-shadow: 0 6px 16px rgba(15, 30, 45, 0.08);
-    transform: translateY(-2px);
-}
-.kpi-card .label {
-    font-size: 0.75rem;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--muted);
-    font-weight: 600;
-    margin-bottom: 0.4rem;
-}
-.kpi-card .value {
-    font-size: 2rem;
-    font-weight: 700;
-    color: var(--brand);
-    line-height: 1.1;
-}
-.kpi-card .value.accent { color: var(--accent); }
-.kpi-card .value.success { color: var(--success); }
-.kpi-card .caption {
-    font-size: 0.8rem;
-    color: var(--muted);
-    margin-top: 0.4rem;
-}
-
-.pill {
-    display: inline-block;
-    padding: 0.25rem 0.8rem;
-    border-radius: 999px;
-    font-size: 0.78rem;
-    font-weight: 600;
-    letter-spacing: 0.02em;
-}
-.pill-good { background: var(--success-soft); color: var(--success); }
-.pill-bad { background: var(--accent-soft); color: var(--accent); }
-.pill-neutral { background: var(--brand-soft); color: var(--brand); }
-
 .insight {
     background: var(--brand-soft);
     border-left: 4px solid var(--brand);
@@ -232,11 +184,6 @@ h3 {
     border: 1px solid var(--line);
 }
 
-[data-testid="stMetricValue"] {
-    color: var(--brand);
-    font-weight: 700;
-}
-
 div[data-testid="stExpander"] {
     border: 1px solid var(--line);
     border-radius: 10px;
@@ -256,6 +203,17 @@ div[data-testid="stExpander"] {
     background: #0F766E;
     color: #fff;
 }
+
+.metric-card {
+    background: white;
+    border-radius: 12px;
+    padding: 1.5rem;
+    text-align: center;
+    border: 1px solid var(--line);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+}
+.metric-card h4 { margin: 0; color: var(--muted); font-size: 1rem; text-transform: uppercase; }
+.metric-card h2 { font-size: 2.5rem; margin: 0.5rem 0 0 0; color: var(--brand); border-left: none; padding-left: 0;}
 
 .app-footer {
     text-align: center;
@@ -303,16 +261,33 @@ CONFIG = {
     "age_min": 0,
     "age_max": 59,
     "malnourished_codes": {"UW", "SUW", "ST", "SST", "MW", "SW"},
-    "non_malnourished_codes": {"N", "OW", "OB", "T"},
     "missing_tokens": {"", "-", "--", "—", "N/A", "NA", "NAN", "NONE", "NULL",
                        "?", ".", "N.D.", "ND"},
     "test_size": 0.20,
     "random_state": 42,
-    "cv_folds": 5,
     "age_bins": [0, 6, 12, 24, 36, 48, 60],
     "age_labels": ["0-5", "6-11", "12-23", "24-35", "36-47", "48-59"],
 }
 
+BARANGAY_COORDS = {
+    "MAMBALILI": (8.06, 126.05),
+    "BUNAWAN BROOK": (8.15, 126.05),
+    "SAN TEODORO": (8.18, 126.00),
+    "POBLACION": (8.18, 126.00),
+    "CONSUELO": (8.20, 125.95),
+    "SAN ANDRES": (8.10, 125.98),
+    "IMELDA": (8.12, 126.08),
+    "NUEVA ERA": (8.14, 126.10),
+    "SAN MARCOS": (8.08, 126.02),
+    "LIBERTAD": (8.05, 125.95),
+    "HAGNAYA": (8.16, 125.92),
+    "BABADAN": (8.22, 126.05),
+}
+
+ZSCORE_MAP = {
+    "N": 0, "OW": 2, "OB": 3, "T": 2,
+    "UW": -2, "SUW": -3, "ST": -2, "SST": -3, "MW": -2, "SW": -3
+}
 
 def strip_display(value):
     if value is None or (isinstance(value, float) and pd.isna(value)):
@@ -321,14 +296,12 @@ def strip_display(value):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-
 def clean_columns(df):
     df = df.copy()
     cleaned = []
     for c in df.columns:
         name = strip_display(c)
-        if not name:
-            name = "col"
+        if not name: name = "col"
         cleaned.append(name)
     seen = {}
     out = []
@@ -342,7 +315,6 @@ def clean_columns(df):
     df.columns = out
     return df
 
-
 def find_col(df, *candidates):
     normalized = {}
     for c in df.columns:
@@ -353,7 +325,6 @@ def find_col(df, *candidates):
         if key in normalized:
             return normalized[key]
     return None
-
 
 def process_excel_source(source, is_uploaded=False):
     try:
@@ -369,27 +340,23 @@ def process_excel_source(source, is_uploaded=False):
                 if any(v in ("NO.", "NO") for v in row_values):
                     header_row = i
                     break
-            if header_row is None:
-                header_row = 3
+            if header_row is None: header_row = 3
             cols = []
             for j, c in enumerate(raw.iloc[header_row].tolist()):
                 name = strip_display(c).replace("\n", " ")
-                if not name:
-                    name = f"col_{j}"
+                if not name: name = f"col_{j}"
                 cols.append(name)
             body = raw.iloc[header_row + 1:].copy()
             body.columns = cols
             body = body.reset_index(drop=True)
             body["_source_sheet"] = strip_display(sheet)
             collected.append(body)
-        if not collected:
-            return None, None
+        if not collected: return None, None
         filename = source.name if is_uploaded else os.path.basename(source)
         return pd.concat(collected, ignore_index=True, sort=False), filename
     except Exception as exc:
         st.error("could not read workbook: " + strip_display(exc))
         return None, None
-
 
 def load_data(uploaded_file, use_example):
     if uploaded_file is not None:
@@ -399,8 +366,7 @@ def load_data(uploaded_file, use_example):
                 df["_source_sheet"] = "uploaded_csv"
                 return df, uploaded_file.name
             except Exception as e:
-                st.error(f"Error reading CSV: {e}")
-                return None, None
+                st.error(f"Error reading CSV: {e}"); return None, None
         else:
             return process_excel_source(uploaded_file, is_uploaded=True)
     elif use_example:
@@ -410,8 +376,7 @@ def load_data(uploaded_file, use_example):
                 files.extend(glob.glob(os.path.join(path, "*.xlsx")))
                 files.extend(glob.glob(os.path.join(path, "*.xls")))
                 files.extend(glob.glob(os.path.join(path, "*.csv")))
-        if not files:
-            return None, None
+        if not files: return None, None
         preferred = [f for f in files if any(k in os.path.basename(f).lower() for k in CONFIG["file_hints"])]
         target = preferred[0] if preferred else files[0]
         if target.lower().endswith(".csv"):
@@ -420,12 +385,10 @@ def load_data(uploaded_file, use_example):
                 df["_source_sheet"] = "unknown"
                 return df, os.path.basename(target)
             except Exception as e:
-                st.error(f"Error reading example CSV: {e}")
-                return None, None
+                st.error(f"Error reading example CSV: {e}"); return None, None
         else:
             return process_excel_source(target, is_uploaded=False)
     return None, None
-
 
 def normalize_text_columns(df):
     df = df.copy()
@@ -433,23 +396,18 @@ def normalize_text_columns(df):
         if df[col].dtype == object:
             df[col] = df[col].apply(lambda v: strip_display(v) if not pd.isna(v) else v)
             df[col] = df[col].replace(list(CONFIG["missing_tokens"]), np.nan)
-            df[col] = df[col].replace({"nan": np.nan, "NaN": np.nan, "None": np.nan})
     return df
-
 
 def drop_non_records(df):
     no_col = find_col(df, "NO.", "NO", "No")
-    if no_col is None:
-        return df
+    if no_col is None: return df
     numeric = pd.to_numeric(df[no_col], errors="coerce")
     return df[numeric.notna()].copy()
-
 
 def drop_duplicates(df):
     meta = [c for c in df.columns if str(c).startswith("_")]
     check_cols = [c for c in df.columns if c not in meta]
     return df.drop_duplicates(subset=check_cols, keep="first").copy()
-
 
 def prepare_columns(df):
     df = df.copy()
@@ -459,53 +417,23 @@ def prepare_columns(df):
         "weight": find_col(df, "WEIGHT (kg)", "Weight (kg)", "weight_kg"),
         "height": find_col(df, "HEIGHT (cm)", "Height (cm)", "height_cm"),
         "barangay": find_col(df, "BARANGAY", "Barangay", "brgy"),
-        "purok": find_col(df, "PUROK / ADDRESS", "PUROK", "Purok", "ADDRESS"),
-        "date": find_col(df, "DATE MEASURED", "Date Measured"),
-        "birthday": find_col(df, "BIRTHDAY", "Birthday"),
         "waz": find_col(df, "WEIGHT-FOR-AGE (WAZ)", "WAZ"),
         "haz": find_col(df, "HEIGHT-FOR-AGE (HAZ)", "HAZ"),
         "whz": find_col(df, "WEIGHT-FOR-HEIGHT (WHZ)", "WHZ"),
         "sheet": "_source_sheet",
     }
     for key in ("age", "weight", "height"):
-        if cols[key]:
-            df[cols[key]] = pd.to_numeric(df[cols[key]], errors="coerce")
+        if cols[key]: df[cols[key]] = pd.to_numeric(df[cols[key]], errors="coerce")
     for key in ("sex", "barangay", "waz", "haz", "whz"):
         if cols[key]:
-            df[cols[key]] = df[cols[key]].apply(
-                lambda v: v.strip().upper() if isinstance(v, str) else v
-            )
+            df[cols[key]] = df[cols[key]].apply(lambda v: v.strip().upper() if isinstance(v, str) else v)
     return df, cols
-
-
-def drop_missing_anthropometry(df, cols):
-    w, h = cols["weight"], cols["height"]
-    if w and h:
-        return df[~(df[w].isna() & df[h].isna())].copy()
-    return df
-
-
-def drop_missing_status(df, cols):
-    waz, haz, whz = cols["waz"], cols["haz"], cols["whz"]
-    if waz and haz and whz:
-        return df[~(df[waz].isna() & df[haz].isna() & df[whz].isna())].copy()
-    return df
-
-
-def drop_out_of_scope_age(df, cols):
-    age = cols["age"]
-    if age:
-        df = df[df[age].notna()].copy()
-        df = df[(df[age] >= CONFIG["age_min"]) & (df[age] <= CONFIG["age_max"])].copy()
-    return df
-
 
 def impute_missing(df, cols):
     df = df.copy()
     for key in ("age", "weight", "height"):
         col = cols[key]
-        if col and df[col].isna().any():
-            df[col] = df[col].fillna(df[col].median())
+        if col and df[col].isna().any(): df[col] = df[col].fillna(df[col].median())
     for key in ("sex", "barangay"):
         col = cols[key]
         if col and df[col].isna().any():
@@ -514,35 +442,25 @@ def impute_missing(df, cols):
             df[col] = df[col].fillna(fill)
     return df
 
-
 def build_target(df, cols):
     waz, haz, whz = cols["waz"], cols["haz"], cols["whz"]
-    if not all([waz, haz, whz]):
-        return None
+    if not all([waz, haz, whz]): return None
     codes = CONFIG["malnourished_codes"]
     def row_malnourished(r):
         for c in (waz, haz, whz):
             v = r[c]
-            if isinstance(v, str) and v in codes:
-                return 1
+            if isinstance(v, str) and v in codes: return 1
         return 0
     return df.apply(row_malnourished, axis=1).astype(int)
 
-
 def build_features(df, cols):
     features = pd.DataFrame(index=df.index)
-    if cols["sex"]:
-        features["sex"] = df[cols["sex"]].astype(str)
-    if cols["age"]:
-        features["age_months"] = pd.to_numeric(df[cols["age"]], errors="coerce")
-    if cols["weight"]:
-        features["weight_kg"] = pd.to_numeric(df[cols["weight"]], errors="coerce")
-    if cols["height"]:
-        features["height_cm"] = pd.to_numeric(df[cols["height"]], errors="coerce")
-    if cols["barangay"]:
-        features["barangay"] = df[cols["barangay"]].astype(str)
+    if cols["sex"]: features["sex"] = df[cols["sex"]].astype(str)
+    if cols["age"]: features["age_months"] = pd.to_numeric(df[cols["age"]], errors="coerce")
+    if cols["weight"]: features["weight_kg"] = pd.to_numeric(df[cols["weight"]], errors="coerce")
+    if cols["height"]: features["height_cm"] = pd.to_numeric(df[cols["height"]], errors="coerce")
+    if cols["barangay"]: features["barangay"] = df[cols["barangay"]].astype(str)
     return features
-
 
 def encode_features(features):
     encoded = features.copy()
@@ -554,19 +472,9 @@ def encode_features(features):
             encoders[col] = encoder
     return encoded, encoders
 
-
-def decode_barangay(codes, encoder):
-    if encoder is None:
-        return codes
-    reverse = {i: name for i, name in enumerate(encoder.classes_)}
-    return pd.Series(codes).map(reverse).fillna("UNKNOWN").values
-
-
 def train_all_models(X, y):
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=CONFIG["test_size"],
-        random_state=CONFIG["random_state"],
+        X, y, test_size=CONFIG["test_size"], random_state=CONFIG["random_state"],
         stratify=y if y.nunique() > 1 else None
     )
     scaler = StandardScaler()
@@ -574,29 +482,17 @@ def train_all_models(X, y):
     X_test_scaled = scaler.transform(X_test)
     candidates = {
         "Decision Tree": DecisionTreeClassifier(random_state=CONFIG["random_state"]),
-        "Random Forest": RandomForestClassifier(
-            n_estimators=200, random_state=CONFIG["random_state"]),
+        "Random Forest": RandomForestClassifier(n_estimators=200, random_state=CONFIG["random_state"]),
         "Naive Bayes": GaussianNB(),
-        "Logistic Regression": LogisticRegression(
-            max_iter=2000, random_state=CONFIG["random_state"]),
+        "Logistic Regression": LogisticRegression(max_iter=2000, random_state=CONFIG["random_state"]),
     }
     trained = {}
     for name, model in candidates.items():
         model.fit(X_train_scaled, y_train)
         y_pred = model.predict(X_test_scaled)
-        if hasattr(model, "predict_proba"):
-            y_proba = model.predict_proba(X_test_scaled)[:, 1]
-        else:
-            y_proba = y_pred.astype(float)
-        trained[name] = {
-            "model": model,
-            "y_test": y_test,
-            "y_pred": y_pred,
-            "y_proba": y_proba,
-            "X_test": X_test_scaled,
-        }
-    return trained, scaler, X_train, X_test, y_train, y_test
-
+        y_proba = model.predict_proba(X_test_scaled)[:, 1] if hasattr(model, "predict_proba") else y_pred.astype(float)
+        trained[name] = {"model": model, "y_test": y_test, "y_pred": y_pred, "y_proba": y_proba, "X_test": X_test_scaled}
+    return trained, scaler
 
 def metric_row(y_true, y_pred):
     return {
@@ -606,29 +502,8 @@ def metric_row(y_true, y_pred):
         "F1-Score": f1_score(y_true, y_pred, zero_division=0),
     }
 
-
-def share_of(part, whole):
-    return round((part / whole * 100), 2) if whole else 0.0
-
-
-def kpi_row(cards):
-    html = '<div class="kpi-row">'
-    for label, value, caption, kind in cards:
-        value_class = {"default": "", "accent": "accent", "success": "success"}.get(kind, "")
-        html += (
-            '<div class="kpi-card">'
-            f'<div class="label">{label}</div>'
-            f'<div class="value {value_class}">{value}</div>'
-            f'<div class="caption">{caption}</div>'
-            '</div>'
-        )
-    html += '</div>'
-    st.markdown(html, unsafe_allow_html=True)
-
-
 def insight(text):
     st.markdown(f'<div class="insight">{text}</div>', unsafe_allow_html=True)
-
 
 with st.sidebar:
     st.markdown("## Data Source")
@@ -638,7 +513,7 @@ with st.sidebar:
 raw_df, loaded_file = load_data(uploaded_file, use_example)
 
 if raw_df is None:
-    st.info("Awaiting data source. Please upload an OPT dataset file (CSV/Excel) or check the 'Use example dataset' box in the sidebar.")
+    st.info("Awaiting data source. Please upload an OPT dataset file or check the 'Use example dataset' box in the sidebar.")
     st.stop()
 
 df = clean_columns(raw_df)
@@ -646,15 +521,12 @@ df = normalize_text_columns(df)
 df = drop_non_records(df)
 df = drop_duplicates(df)
 df, col_map = prepare_columns(df)
-df = drop_missing_anthropometry(df, col_map)
-df = drop_missing_status(df, col_map)
-df = drop_out_of_scope_age(df, col_map)
+df = df[df[col_map["age"]].notna() & (df[col_map["age"]] >= CONFIG["age_min"]) & (df[col_map["age"]] <= CONFIG["age_max"])].copy()
 df = impute_missing(df, col_map)
 
 target = build_target(df, col_map)
 if target is None:
-    st.error("required indicator columns (WAZ, HAZ, WHZ) were not detected")
-    st.stop()
+    st.error("required indicator columns (WAZ, HAZ, WHZ) were not detected"); st.stop()
 
 df = df.loc[target.index].copy()
 df["malnourished"] = target.values
@@ -665,51 +537,11 @@ features = features[valid_mask].reset_index(drop=True)
 labels = df.loc[valid_mask, "malnourished"].reset_index(drop=True)
 df_model = df.loc[valid_mask].reset_index(drop=True)
 
-if len(features) < 10 or labels.nunique() < 2:
-    st.error("not enough valid records or class variety to train models")
-    st.stop()
-
 encoded, encoders = encode_features(features)
-
-trained, scaler, X_train, X_test, y_train, y_test = train_all_models(encoded, labels)
-
-metrics = pd.DataFrame({
-    name: metric_row(r["y_test"], r["y_pred"]) for name, r in trained.items()
-}).T
-
+trained, scaler = train_all_models(encoded, labels)
+metrics = pd.DataFrame({name: metric_row(r["y_test"], r["y_pred"]) for name, r in trained.items()}).T
 metrics["F1+Recall"] = metrics["F1-Score"] + metrics["Recall"]
 best_combined = metrics["F1+Recall"].idxmax()
-best_f1 = metrics["F1-Score"].idxmax()
-best_recall = metrics["Recall"].idxmax()
-
-cv_folds = CONFIG["cv_folds"]
-scaled_features = StandardScaler().fit_transform(encoded)
-cv = StratifiedKFold(n_splits=cv_folds, shuffle=True,
-                     random_state=CONFIG["random_state"])
-cv_models = {
-    "Decision Tree": DecisionTreeClassifier(random_state=CONFIG["random_state"]),
-    "Random Forest": RandomForestClassifier(
-        n_estimators=200, random_state=CONFIG["random_state"]),
-    "Naive Bayes": GaussianNB(),
-    "Logistic Regression": LogisticRegression(
-        max_iter=2000, random_state=CONFIG["random_state"]),
-}
-cv_scores = {}
-for name, model in cv_models.items():
-    cv_scores[name] = cross_val_score(
-        model, scaled_features, labels, cv=cv, scoring="accuracy")
-cv_df = pd.DataFrame(cv_scores)
-cv_df.index = [f"Fold {i+1}" for i in range(cv_folds)]
-cv_df.loc["Mean"] = cv_df.mean()
-cv_df.loc["Std"] = cv_df.iloc[:-2].std()
-
-metrics_with_cv = metrics.copy()
-for name in metrics_with_cv.index:
-    mean_val = cv_scores[name].mean()
-    std_val = cv_scores[name].std()
-    metrics_with_cv.loc[name, "CV Accuracy (mean ± std)"] = (
-        f"{mean_val:.4f} ± {std_val:.4f}"
-    )
 
 st.markdown(
     '<div class="app-header">'
@@ -719,502 +551,276 @@ st.markdown(
     unsafe_allow_html=True
 )
 
-overview_tab, brgy_tab, demo_tab, factors_tab, evaluation_tab, decision_tab = st.tabs([
-    "Overview",
-    "Results by Barangay",
-    "Results by Sex and Age Group",
-    "Significant Factors",
-    "Model Evaluation",
-    "Decision Support",
-])
-
 with st.sidebar:
     st.markdown("## Filters")
     if col_map["barangay"]:
-        brgy_options = sorted(df_model[col_map["barangay"]].dropna().unique().tolist())
-        selected_brgy = st.multiselect(
-            "Barangay", options=brgy_options, default=brgy_options)
+        brgy_options = ["All Barangays"] + sorted(df_model[col_map["barangay"]].dropna().unique().tolist())
+        focus_brgy = st.selectbox("Focus Barangay", options=brgy_options)
     else:
-        selected_brgy = None
+        focus_brgy = "All Barangays"
+        
     if col_map["sex"]:
         sex_options = sorted(df_model[col_map["sex"]].dropna().unique().tolist())
-        selected_sex = st.multiselect(
-            "Sex", options=sex_options, default=sex_options)
+        selected_sex = st.multiselect("Sex", options=sex_options, default=sex_options)
     else:
         selected_sex = None
-    age_range = st.slider(
-        "Age in months",
-        min_value=int(CONFIG["age_min"]),
-        max_value=int(CONFIG["age_max"]),
-        value=(int(CONFIG["age_min"]), int(CONFIG["age_max"])),
-    )
 
 filtered = df_model.copy()
-if selected_brgy is not None and col_map["barangay"]:
-    filtered = filtered[filtered[col_map["barangay"]].isin(selected_brgy)]
+if focus_brgy != "All Barangays" and col_map["barangay"]:
+    filtered = filtered[filtered[col_map["barangay"]] == focus_brgy]
 if selected_sex is not None and col_map["sex"]:
     filtered = filtered[filtered[col_map["sex"]].isin(selected_sex)]
-if col_map["age"]:
-    filtered = filtered[(filtered[col_map["age"]] >= age_range[0]) &
-                        (filtered[col_map["age"]] <= age_range[1])]
 
-with overview_tab:
-    total = len(filtered)
-    mal = int(filtered["malnourished"].sum())
-    not_mal = total - mal
-    share = share_of(mal, total)
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "1. Demographic Profile",
+    "2. Nutritional Status (WAZ/HAZ/WHZ)",
+    "3. Patterns & Key Factors",
+    "4. Model Evaluation",
+    "5. Decision Support"
+])
 
-    kpi_row([
-        ("Records", f"{total:,}", "filtered children", "default"),
-        ("Malnourished", f"{mal:,}", "binary label = 1", "accent"),
-        ("Not Malnourished", f"{not_mal:,}", "binary label = 0", "success"),
-        ("Malnourished share", f"{share}%", "of filtered records", "accent"),
-    ])
-
-    st.markdown("## Nutritional Status Distribution")
-    col_a, col_b = st.columns([3, 2])
-    with col_a:
-        fig, ax = plt.subplots(figsize=(6, 3.4))
-        counts = filtered["malnourished"].value_counts().reindex([0, 1], fill_value=0)
-        bars = ax.bar(
-            ["Not Malnourished", "Malnourished"],
-            counts.values,
-            color=[PALETTE["success"], PALETTE["accent"]],
-            width=0.55
-        )
-        for bar, v in zip(bars, counts.values):
-            ax.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + max(1, total * 0.015),
-                    str(int(v)), ha="center", fontsize=10, fontweight="600")
-        ax.set_ylabel("Children")
-        ax.set_ylim(0, counts.max() * 1.18 if counts.max() else 1)
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-    with col_b:
-        st.markdown("<h3>Share</h3>", unsafe_allow_html=True)
-        st.markdown(
-            f'<div class="kpi-card">'
-            f'<div class="label">Malnourished</div>'
-            f'<div class="value accent">{share}%</div>'
-            f'<div class="caption">{mal} of {total} children</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-
-    st.markdown("## Records by Year and Barangay")
-    if col_map["barangay"] and col_map["sheet"]:
-        crosstab = pd.crosstab(
-            filtered[col_map["sheet"]], filtered[col_map["barangay"]],
-            margins=True, margins_name="Total"
-        )
-        with st.expander("records by sheet and barangay", expanded=True):
-            st.dataframe(crosstab, use_container_width=True)
-
-    st.markdown("## Year-over-Year Malnourishment")
-    if col_map["sheet"]:
-        year_summary = (
-            filtered.groupby(col_map["sheet"])["malnourished"]
-            .agg(Total="count", Malnourished="sum")
-        )
-        year_summary["Not Malnourished"] = (
-            year_summary["Total"] - year_summary["Malnourished"])
-        year_summary["Malnourished %"] = (
-            year_summary["Malnourished"] /
-            year_summary["Total"].replace(0, np.nan) * 100
-        ).round(2)
-
-        fig, ax = plt.subplots(figsize=(8, 3.4))
-        plot_df = year_summary.reset_index().rename(columns={col_map["sheet"]: "Sheet"})
-        plot_df[["Malnourished", "Not Malnourished"]].plot(
-            kind="bar", stacked=True, ax=ax,
-            color=[PALETTE["accent"], PALETTE["success"]],
-            width=0.5, edgecolor="white"
-        )
-        ax.set_xticklabels(plot_df["Sheet"].astype(str), rotation=0)
-        ax.set_ylabel("Children")
-        ax.set_xlabel("")
-        ax.legend(frameon=False)
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-
-        with st.expander("year-over-year rates", expanded=False):
-            st.dataframe(year_summary, use_container_width=True)
-
-        if len(year_summary) >= 2:
-            sheets = year_summary.index.tolist()
-            first, last = sheets[0], sheets[-1]
-            delta = (year_summary.loc[last, "Malnourished %"] -
-                     year_summary.loc[first, "Malnourished %"])
-            insight(
-                f"malnourished share changed from "
-                f"<b>{year_summary.loc[first, 'Malnourished %']}%</b> ({first}) to "
-                f"<b>{year_summary.loc[last, 'Malnourished %']}%</b> ({last}); "
-                f"difference of <b>{delta:+.2f}</b> percentage points."
-            )
-
-    st.markdown("## WHO Indicator Codes")
-    indicator_cols = [col_map["waz"], col_map["haz"], col_map["whz"]]
-    indicator_cols = [c for c in indicator_cols if c]
-    if indicator_cols:
-        cols_ui = st.columns(len(indicator_cols))
-        for i, col in enumerate(indicator_cols):
-            with cols_ui[i]:
-                st.markdown(f"<h3>{col}</h3>", unsafe_allow_html=True)
-                counts = filtered[col].fillna("not recorded").value_counts()
-                st.dataframe(counts.rename("records").to_frame(),
-                             use_container_width=True)
-
-with brgy_tab:
-    st.markdown("## Malnourishment by Barangay")
-    if col_map["barangay"]:
-        brgy_summary = (
-            filtered.groupby(col_map["barangay"])["malnourished"]
-            .agg(Total="count", Malnourished="sum")
-        )
-        brgy_summary["Not Malnourished"] = (
-            brgy_summary["Total"] - brgy_summary["Malnourished"])
-        brgy_summary["Malnourished %"] = (
-            brgy_summary["Malnourished"] /
-            brgy_summary["Total"].replace(0, np.nan) * 100
-        ).round(2)
-        brgy_summary = brgy_summary.sort_values(
-            "Malnourished %", ascending=False)
-
-        fig, ax = plt.subplots(figsize=(10, max(3.5, len(brgy_summary) * 0.42)))
-        plot_df = brgy_summary.sort_values("Malnourished %", ascending=True)
-        bars = ax.barh(plot_df.index, plot_df["Malnourished %"],
-                       color=PALETTE["brand"], height=0.65)
-        for bar, v in zip(bars, plot_df["Malnourished %"].values):
-            ax.text(bar.get_width() + 0.4, bar.get_y() + bar.get_height() / 2,
-                    f"{v:.1f}%", va="center", fontsize=9, color="#64748B")
-        ax.set_xlabel("Malnourished share (%)")
-        ax.set_xlim(0, max(plot_df["Malnourished %"].max() * 1.25, 10))
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-
-        with st.expander("barangay table", expanded=True):
-            st.dataframe(brgy_summary, use_container_width=True)
-
-        worst = brgy_summary.index[0]
-        insight(
-            "highest malnourished share recorded in <b>" + str(worst) +
-            "</b> at <b>" + str(brgy_summary.loc[worst, "Malnourished %"]) +
-            "%</b>."
-        )
-
-with demo_tab:
-    st.markdown("## Malnourishment by Sex")
-    if col_map["sex"]:
-        sex_summary = (
-            filtered.groupby(col_map["sex"])["malnourished"]
-            .agg(Total="count", Malnourished="sum")
-        )
-        sex_summary["Not Malnourished"] = (
-            sex_summary["Total"] - sex_summary["Malnourished"])
-        sex_summary["Malnourished %"] = (
-            sex_summary["Malnourished"] /
-            sex_summary["Total"].replace(0, np.nan) * 100
-        ).round(2)
-        st.dataframe(sex_summary, use_container_width=True)
-
-    st.markdown("## Malnourishment by Age Group")
-    if col_map["age"]:
-        work = filtered.copy()
-        work["age_group"] = pd.cut(
-            work[col_map["age"]],
-            bins=CONFIG["age_bins"],
-            labels=CONFIG["age_labels"],
-            include_lowest=True,
-            right=False,
-        )
-        age_summary = (
-            work.groupby("age_group", observed=True)["malnourished"]
-            .agg(Total="count", Malnourished="sum")
-        )
-        age_summary["Not Malnourished"] = (
-            age_summary["Total"] - age_summary["Malnourished"])
-        age_summary["Malnourished %"] = (
-            age_summary["Malnourished"] /
-            age_summary["Total"].replace(0, np.nan) * 100
-        ).round(2)
-
-        fig, ax = plt.subplots(figsize=(10, 3.4))
-        plot_df = age_summary.reset_index()
-        bars = ax.bar(
-            plot_df["age_group"].astype(str),
-            plot_df["Malnourished %"],
-            color=PALETTE["brand_light"], width=0.6
-        )
-        for bar, v in zip(bars, plot_df["Malnourished %"].values):
-            ax.text(bar.get_x() + bar.get_width() / 2,
-                    bar.get_height() + 0.4,
-                    f"{v:.1f}%", ha="center", fontsize=9)
-        ax.set_xlabel("Age group (months)")
-        ax.set_ylabel("Malnourished share (%)")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-
-        with st.expander("age-group table", expanded=False):
-            st.dataframe(age_summary, use_container_width=True)
-
-with factors_tab:
-    st.markdown("## Variable Importance Across Models")
-
-    importance = {}
-    for name, r in trained.items():
-        model = r["model"]
-        if hasattr(model, "feature_importances_"):
-            importance[name] = model.feature_importances_
-        elif hasattr(model, "coef_"):
-            importance[name] = np.abs(model.coef_[0])
-
-    if importance:
-        imp_df = pd.DataFrame(importance, index=encoded.columns)
-        imp_df["Average"] = imp_df.mean(axis=1)
-        imp_df = imp_df.sort_values("Average", ascending=False)
-
-        rank_df = imp_df.drop(columns="Average").rank(ascending=False, method="average")
-        imp_df["Consensus Rank"] = rank_df.mean(axis=1).round(2)
-        imp_df = imp_df.sort_values("Consensus Rank", ascending=True)
-
-        st.caption("tree importance and absolute logistic coefficients are not "
-                   "on a common scale; consensus rank is the mean of per-model ranks.")
-
-        fig, ax = plt.subplots(figsize=(10, max(3.5, len(imp_df) * 0.45)))
-        plot_df = imp_df.drop(columns=["Average", "Consensus Rank"]).iloc[::-1]
-        plot_df.plot(kind="barh", ax=ax,
-                     color=PALETTE["series"][:len(plot_df.columns)],
-                     width=0.7, edgecolor="white")
-        ax.set_xlabel("Importance or absolute coefficient")
-        ax.legend(frameon=False, fontsize=8, loc="lower right")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-
-        with st.expander("importance table", expanded=True):
-            st.dataframe(imp_df.round(4), use_container_width=True)
-
-        top_name = imp_df.index[0]
-        insight(
-            "highest consensus importance: <b>" + str(top_name) +
-            "</b> with mean rank <b>" +
-            f"{imp_df.loc[top_name, 'Consensus Rank']:.2f}</b>."
-        )
-
-with evaluation_tab:
-    st.markdown("## Test-Set Performance")
-    st.caption("point estimates come from a single stratified 80/20 split; "
-               "the last column reports cross-validation accuracy mean ± std.")
-    display_metrics = metrics_with_cv.drop(columns="F1+Recall").round(4)
-    st.dataframe(
-        display_metrics.style.highlight_max(axis=0, color="#CCFBF1"),
-        use_container_width=True
+with tab1:
+    st.markdown("## Analyze the demographic profile of the children in Bunawan")
+    if focus_brgy != "All Barangays":
+        st.info(f"Currently viewing data for **{focus_brgy}**. Select 'All Barangays' in the sidebar to view the whole municipality.")
+    
+    st.markdown("### Geographic Distribution (Map)")
+    map_data = df_model.groupby(col_map["barangay"]).agg(
+        Total=("malnourished", "count"),
+        Malnourished=("malnourished", "sum")
+    ).reset_index()
+    map_data["Malnutrition Rate (%)"] = (map_data["Malnourished"] / map_data["Total"] * 100).round(2)
+    map_data["lat"] = map_data[col_map["barangay"]].map(lambda x: BARANGAY_COORDS.get(x, (8.1, 126.0))[0])
+    map_data["lon"] = map_data[col_map["barangay"]].map(lambda x: BARANGAY_COORDS.get(x, (8.1, 126.0))[1])
+    
+    fig_map = px.scatter_mapbox(
+        map_data, lat="lat", lon="lon", size="Total", color="Malnutrition Rate (%)",
+        hover_name=col_map["barangay"], color_continuous_scale="Reds",
+        size_max=30, zoom=10, height=400, title="Malnutrition Rate Across Barangays (Darker Red = Higher Rate)"
     )
+    fig_map.update_layout(mapbox_style="open-street-map", margin={"r":0,"t":30,"l":0,"b":0})
+    st.plotly_chart(fig_map, use_container_width=True)
 
-    st.markdown("## Best Model Summary")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown(
-            f'<div class="kpi-card">'
-            f'<div class="label">Highest F1</div>'
-            f'<div class="value">{metrics.loc[best_f1, "F1-Score"]:.4f}</div>'
-            f'<div class="caption">{best_f1}</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-    with c2:
-        st.markdown(
-            f'<div class="kpi-card">'
-            f'<div class="label">Highest Recall</div>'
-            f'<div class="value">{metrics.loc[best_recall, "Recall"]:.4f}</div>'
-            f'<div class="caption">{best_recall}</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
-    with c3:
-        st.markdown(
-            f'<div class="kpi-card">'
-            f'<div class="label">Highest F1 + Recall</div>'
-            f'<div class="value accent">{metrics.loc[best_combined, "F1+Recall"]:.4f}</div>'
-            f'<div class="caption">{best_combined}</div>'
-            f'</div>',
-            unsafe_allow_html=True
-        )
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.markdown("### Malnourishment by Barangay")
+        brgy_summary = filtered.groupby(col_map["barangay"])["malnourished"].agg(Total="count", Malnourished="sum").reset_index()
+        brgy_summary["Rate"] = (brgy_summary["Malnourished"] / brgy_summary["Total"] * 100).round(2)
+        fig_brgy = px.bar(brgy_summary.sort_values("Rate", ascending=True), x="Rate", y=col_map["barangay"], orientation="h", color="Rate", color_continuous_scale="Reds", text="Rate")
+        fig_brgy.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+        fig_brgy.update_layout(showlegend=False, height=400, xaxis_title="Malnutrition Rate (%)", yaxis_title="")
+        st.plotly_chart(fig_brgy, use_container_width=True)
 
-    st.caption("best-model selection uses combined F1 + Recall, per the "
-               "screening-oriented evaluation; a precision-first policy "
-               "would reorder the candidates.")
+    with col_b:
+        st.markdown("### Sex Distribution by Barangay (Stacked)")
+        sex_brgy = pd.crosstab(filtered[col_map["barangay"]], [filtered[col_map["sex"]], filtered["malnourished"]])
+        sex_brgy.columns = [f"{c[0]} ({'Mal' if c[1]==1 else 'Not Mal'})" for c in sex_brgy.columns]
+        fig_sex = go.Figure()
+        for col in sex_brgy.columns:
+            color = PALETTE["accent"] if "Mal)" in col else PALETTE["success"]
+            if "Male" in col: color = "#0D9488" if "Not Mal" in col else "#EA580C"
+            elif "Female" in col: color = "#14B8A6" if "Not Mal" in col else "#FB923C"
+            fig_sex.add_trace(go.Bar(name=col, x=sex_brgy.index, y=sex_brgy[col], marker_color=color))
+        fig_sex.update_layout(barmode='stack', height=400, xaxis_title="", yaxis_title="Number of Children")
+        st.plotly_chart(fig_sex, use_container_width=True)
+        
+        if focus_brgy != "All Barangays" and col_map["sex"]:
+            sex_counts = filtered.groupby(col_map["sex"])["malnourished"].sum()
+            if not sex_counts.empty:
+                worst_sex = sex_counts.idxmax()
+                insight(f"Analysis for <b>{focus_brgy}</b>: The <b>{worst_sex}</b> demographic has the highest number of malnourished children ({sex_counts.max()} cases), indicating a need for targeted gender-sensitive interventions in this area.")
 
-    st.markdown("## Confusion Matrices")
+    st.markdown("### Age Group Distribution")
+    work_age = filtered.copy()
+    work_age["age_group"] = pd.cut(work_age[col_map["age"]], bins=CONFIG["age_bins"], labels=CONFIG["age_labels"], include_lowest=True, right=False)
+    age_summary = work_age.groupby("age_group", observed=True)["malnourished"].agg(Total="count", Malnourished="sum").reset_index()
+    age_summary["Rate"] = (age_summary["Malnourished"] / age_summary["Total"] * 100).round(2)
+    
+    fig_age = px.bar(age_summary, x="age_group", y="Malnourished", color="Rate", color_continuous_scale="Reds", text="Rate", title="Malnourished Children by Age Group (Months)")
+    fig_age.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+    st.plotly_chart(fig_age, use_container_width=True)
+    
+    st.markdown("#### Feeding Program Summary Report (Tabular)")
+    st.caption("This table provides the exact number of malnourished children per age group for the selected barangay, useful for planning feeding programs.")
+    feed_table = filtered.groupby([col_map["barangay"], "age_group" if "age_group" in filtered.columns else pd.cut(filtered[col_map["age"]], bins=CONFIG["age_bins"], labels=CONFIG["age_labels"], include_lowest=True, right=False)], observed=True)["malnourished"].sum().reset_index()
+    feed_table.columns = ["Barangay", "Age Group", "Malnourished Count"]
+    st.dataframe(feed_table.pivot(index="Barangay", columns="Age Group", values="Malnourished Count").fillna(0).astype(int), use_container_width=True)
+
+    st.markdown("### Variable Relationships (Scatter Plots)")
+    sc1, sc2, sc3 = st.columns(3)
+    with sc1:
+        fig_s1 = px.scatter(filtered, x=col_map["age"], y=col_map["weight"], color=filtered["malnourished"].astype(str), 
+                            labels={"color": "Malnourished", col_map["age"]: "Age (Months)", col_map["weight"]: "Weight (kg)"},
+                            color_discrete_map={"0": PALETTE["success"], "1": PALETTE["accent"]}, title="Age vs Weight")
+        st.plotly_chart(fig_s1, use_container_width=True)
+    with sc2:
+        fig_s2 = px.scatter(filtered, x=col_map["age"], y=col_map["height"], color=filtered["malnourished"].astype(str), 
+                            labels={"color": "Malnourished", col_map["age"]: "Age (Months)", col_map["height"]: "Height (cm)"},
+                            color_discrete_map={"0": PALETTE["success"], "1": PALETTE["accent"]}, title="Age vs Height")
+        st.plotly_chart(fig_s2, use_container_width=True)
+    with sc3:
+        fig_s3 = px.scatter(filtered, x=col_map["height"], y=col_map["weight"], color=filtered["malnourished"].astype(str), 
+                            labels={"color": "Malnourished", col_map["height"]: "Height (cm)", col_map["weight"]: "Weight (kg)"},
+                            color_discrete_map={"0": PALETTE["success"], "1": PALETTE["accent"]}, title="Height vs Weight")
+        st.plotly_chart(fig_s3, use_container_width=True)
+        
+    insight("Look closely at the Height vs Weight scatter plot. Children clustering in the bottom-left quadrant are both short and light for their age, indicating severe stunting and wasting (acute and chronic malnutrition).")
+
+with tab2:
+    st.markdown("## Determine the nutritional status based on standard indicators")
+    st.write("Visualizing the distribution of WHO 2006 Child Growth Standard classifications across the selected barangays.")
+    
+    status_cols = [col_map["waz"], col_map["haz"], col_map["whz"]]
+    status_names = ["Weight-for-Age (WAZ)", "Height-for-Age (HAZ)", "Weight-for-Height (WHZ)"]
+    
+    for i, col in enumerate(status_cols):
+        st.markdown(f"### {status_names[i]}")
+        
+        if focus_brgy == "All Barangays":
+            stat_df = filtered.groupby([col_map["barangay"], col]).size().reset_index(name="Count")
+            fig_stat = px.bar(stat_df, x=col_map["barangay"], y="Count", color=col, barmode="stack",
+                              title=f"{status_names[i]} Distribution by Barangay",
+                              color_discrete_sequence=px.colors.qualitative.Pastel)
+            st.plotly_chart(fig_stat, use_container_width=True)
+        else:
+            stat_df = filtered[col].value_counts().reset_index()
+            stat_df.columns = ["Status", "Count"]
+            fig_pie = px.pie(stat_df, names="Status", values="Count", hole=0.4, 
+                             title=f"{status_names[i]} Distribution in {focus_brgy}",
+                             color_discrete_sequence=px.colors.qualitative.Pastel)
+            st.plotly_chart(fig_pie, use_container_width=True)
+            
+        with st.expander(f"View raw counts for {status_names[i]}"):
+            st.dataframe(filtered.groupby([col_map["barangay"], col]).size().unstack(fill_value=0), use_container_width=True)
+
+with tab3:
+    st.markdown("## Identify patterns and key factors associated with child malnutrition")
+    
+    st.markdown("### Correlation Heatmap (Age, Weight, Height, WAZ, HAZ, WHZ)")
+    st.caption("WHO z-score categorical values (e.g., 'UW', 'St') are mapped to approximate numeric scores to calculate correlation.")
+    corr_df = filtered[[col_map["age"], col_map["weight"], col_map["height"], col_map["waz"], col_map["haz"], col_map["whz"]]].copy()
+    corr_df.columns = ["Age", "Weight", "Height", "WAZ", "HAZ", "WHZ"]
+    
+    for z_col in ["WAZ", "HAZ", "WHZ"]:
+        corr_df[z_col] = corr_df[z_col].map(ZSCORE_MAP).fillna(0)
+        
+    fig_corr, ax = plt.subplots(figsize=(8, 5))
+    sns.heatmap(corr_df.corr(), annot=True, cmap="RdBu_r", center=0, fmt=".2f", ax=ax)
+    st.pyplot(fig_corr); plt.close()
+
+    st.markdown("### K-Means Clustering (Grouping Similar Children)")
+    st.write("Identifying clusters based on Age, Weight, and Height to find distinct nutritional profiles.")
+    cluster_df = filtered[[col_map["age"], col_map["weight"], col_map["height"]]].dropna().copy()
+    cluster_df.columns = ["Age", "Weight", "Height"]
+    
+    if len(cluster_df) > 5:
+        X_cluster = StandardScaler().fit_transform(cluster_df)
+        kmeans = KMeans(n_clusters=3, random_state=42, n_init=10).fit(X_cluster)
+        cluster_df["Cluster"] = kmeans.labels_.astype(str)
+        
+        fig_cluster = px.scatter(cluster_df, x="Age", y="Weight", color="Cluster", 
+                                 title="K-Means Clustering: Age vs Weight (3 Clusters)",
+                                 color_discrete_sequence=px.colors.qualitative.Set1)
+        st.plotly_chart(fig_cluster, use_container_width=True)
+        
+        with st.expander("Cluster Characteristics (Mean values)"):
+            st.dataframe(cluster_df.groupby("Cluster").mean().round(2))
+    else:
+        st.warning("Not enough data to perform clustering.")
+
+    st.markdown("### Feature Importance (Random Forest)")
+    st.write("Ranking variables based on how much they contribute to predicting malnutrition.")
+    rf_model = trained["Random Forest"]["model"]
+    imp_df = pd.DataFrame({"Feature": encoded.columns, "Importance": rf_model.feature_importances_})
+    imp_df["Importance (%)"] = (imp_df["Importance"] / imp_df["Importance"].sum() * 100).round(2)
+    imp_df = imp_df.sort_values("Importance (%)", ascending=True)
+    
+    fig_imp = px.bar(imp_df, x="Importance (%)", y="Feature", orientation="h", 
+                     title="Random Forest Feature Importance (Ranked by Percentage)",
+                     color="Importance (%)", color_continuous_scale="Teal")
+    fig_imp.update_traces(texttemplate='%{x:.1f}%', textposition='outside')
+    st.plotly_chart(fig_imp, use_container_width=True)
+
+with tab4:
+    st.markdown("## Evaluate the predictive model that classify malnutrition risk")
+    st.markdown("### Test-Set Performance Metrics")
+    
+    cols = st.columns(4)
+    metrics_to_show = ["Accuracy", "Precision", "Recall", "F1-Score"]
+    for i, metric in enumerate(metrics_to_show):
+        best_val = metrics[metric].max()
+        best_model = metrics[metric].idxmax()
+        with cols[i]:
+            st.markdown(f"""
+            <div class="metric-card">
+                <h4>{metric}</h4>
+                <h2>{best_val:.2%}</h2>
+                <p style="color: #64748B; margin: 0;">Best: {best_model}</p>
+            </div>
+            """, unsafe_allow_html=True)
+            
+    st.markdown("### Detailed Algorithm Comparison")
+    st.dataframe(metrics.drop(columns="F1+Recall").style.highlight_max(axis=0, color="#CCFBF1").format("{:.4f}"), use_container_width=True)
+
+    st.markdown("### ROC-AUC Curves")
+    fig_roc, ax_roc = plt.subplots(figsize=(8, 5))
+    for name, r in trained.items():
+        fpr, tpr, _ = roc_curve(r["y_test"], r["y_proba"])
+        roc_auc = auc(fpr, tpr)
+        ax_roc.plot(fpr, tpr, label=f'{name} (AUC = {roc_auc:.3f})')
+    ax_roc.plot([0, 1], [0, 1], 'k--', label='Random Chance')
+    ax_roc.set_xlabel('False Positive Rate')
+    ax_roc.set_ylabel('True Positive Rate')
+    ax_roc.set_title('Receiver Operating Characteristic (ROC) Curves')
+    ax_roc.legend(loc="lower right")
+    st.pyplot(fig_roc); plt.close()
+
+    st.markdown("### Confusion Matrices")
     pair_cols = st.columns(2)
     for i, (name, r) in enumerate(trained.items()):
         with pair_cols[i % 2]:
             cm = confusion_matrix(r["y_test"], r["y_pred"], labels=[0, 1])
-            fig, ax = plt.subplots(figsize=(4.2, 3.4))
-            sns.heatmap(cm, annot=True, fmt="d", cmap="GnBu",
-                        xticklabels=["Not Mal.", "Mal."],
-                        yticklabels=["Not Mal.", "Mal."], ax=ax,
-                        cbar=False, annot_kws={"fontsize": 12, "fontweight": "600"})
-            ax.set_title(name, pad=8)
-            ax.set_xlabel("Predicted")
-            ax.set_ylabel("Actual")
-            plt.tight_layout()
-            st.pyplot(fig)
-            plt.close()
+            fig_cm, ax_cm = plt.subplots(figsize=(4, 3))
+            sns.heatmap(cm, annot=True, fmt="d", cmap="GnBu", xticklabels=["Not Mal.", "Mal."], yticklabels=["Not Mal.", "Mal."], ax=ax_cm, cbar=False)
+            ax_cm.set_title(name)
+            ax_cm.set_xlabel("Predicted"); ax_cm.set_ylabel("Actual")
+            st.pyplot(fig_cm); plt.close()
 
-    st.markdown("## Per-Model Classification Report")
-    for name, r in trained.items():
-        with st.expander(name):
-            report = classification_report(
-                r["y_test"], r["y_pred"],
-                target_names=["Not Malnourished", "Malnourished"],
-                output_dict=True, zero_division=0
-            )
-            st.dataframe(pd.DataFrame(report).T.round(4),
-                         use_container_width=True)
+    st.markdown("### Why these four algorithms?")
+    insight("""
+    <b>Decision Tree</b> and <b>Random Forest</b> were selected for their ability to handle non-linear relationships and provide interpretable feature importance, which is crucial for public health policy. 
+    <b>Naive Bayes</b> serves as a highly efficient probabilistic baseline, particularly robust on small datasets. 
+    <b>Logistic Regression</b> was chosen as the standard statistical baseline for binary classification, allowing us to compare complex tree-based models against a traditional linear model.
+    """)
 
-    st.markdown("## Recall by Barangay (Test Set)")
-    if col_map["barangay"]:
-        test_rows = X_test.index.tolist()
-        if "barangay" in encoded.columns:
-            brgy_codes_test = encoded.iloc[test_rows]["barangay"].values
-            brgy_names_test = decode_barangay(
-                brgy_codes_test, encoders.get("barangay"))
-        else:
-            brgy_names_test = None
-
-        if brgy_names_test is not None:
-            recall_records = []
-            for name, r in trained.items():
-                df_te = pd.DataFrame({
-                    "barangay": brgy_names_test,
-                    "y_true": r["y_test"].values,
-                    "y_pred": r["y_pred"],
-                })
-                for brgy_name, group in df_te.groupby("barangay"):
-                    pos_mask = group["y_true"] == 1
-                    if pos_mask.sum() == 0:
-                        recall_val = np.nan
-                    else:
-                        recall_val = (
-                            (group.loc[pos_mask, "y_pred"] == 1).sum()
-                            / pos_mask.sum()
-                        )
-                    recall_records.append({
-                        "Model": name,
-                        "Barangay": brgy_name,
-                        "Positives": int(pos_mask.sum()),
-                        "Recall": round(float(recall_val), 4) if not pd.isna(recall_val) else "n/a",
-                    })
-            recall_df = pd.DataFrame(recall_records)
-            with st.expander("per-barangay recall on the held-out test set"):
-                st.dataframe(recall_df, use_container_width=True)
-
-    st.markdown("## Cross-Validation Accuracy")
-    with st.expander("fold-by-fold cross-validation accuracy", expanded=True):
-        st.dataframe(cv_df.round(4), use_container_width=True)
-        mean_lines = " | ".join(
-            f"{n}: {s.mean():.4f} ± {s.std():.4f}"
-            for n, s in cv_scores.items()
-        )
-        st.write("mean cross-validation accuracy — " + mean_lines)
-
-with decision_tab:
-    st.markdown("## Predicted Risk per Barangay")
+with tab5:
+    st.markdown("## Decision Support: Predicted Risk per Barangay")
     best_model = trained[best_combined]["model"]
     full_matrix = scaler.transform(encoded)
-    if hasattr(best_model, "predict_proba"):
-        full_proba = best_model.predict_proba(full_matrix)[:, 1]
-    else:
-        full_proba = best_model.predict(full_matrix).astype(float)
+    full_proba = best_model.predict_proba(full_matrix)[:, 1] if hasattr(best_model, "predict_proba") else best_model.predict(full_matrix).astype(float)
     full_pred = (full_proba >= 0.5).astype(int)
 
     scored = df_model.copy()
     scored["risk_probability"] = full_proba
-    scored["predicted_risk"] = full_pred
-    scored["predicted_label"] = scored["predicted_risk"].map(
-        {1: "At Risk", 0: "Not At Risk"})
-
-    st.caption("risk_probability is the model's estimated probability of "
-               "malnourishment; the binary label uses a 0.50 threshold.")
+    scored["predicted_label"] = full_pred.map({1: "At Risk", 0: "Not At Risk"})
 
     if col_map["barangay"]:
-        risk_summary = (
-            scored.groupby(col_map["barangay"])["predicted_risk"]
-            .agg(Total="count", At_Risk="sum")
-        )
-        risk_summary["Not At Risk"] = (
-            risk_summary["Total"] - risk_summary["At_Risk"])
-        risk_summary["At Risk %"] = (
-            risk_summary["At_Risk"] /
-            risk_summary["Total"].replace(0, np.nan) * 100
-        ).round(2)
-        mean_prob = (
-            scored.groupby(col_map["barangay"])["risk_probability"].mean().round(4)
-        )
-        risk_summary["Mean Probability"] = mean_prob
-        risk_summary = risk_summary.sort_values(
-            "Mean Probability", ascending=False)
+        risk_summary = scored.groupby(col_map["barangay"])["predicted_label"].value_counts().unstack(fill_value=0)
+        if "At Risk" not in risk_summary.columns: risk_summary["At Risk"] = 0
+        if "Not At Risk" not in risk_summary.columns: risk_summary["Not At Risk"] = 0
+        risk_summary["Total"] = risk_summary.sum(axis=1)
+        risk_summary["Mean Prob"] = scored.groupby(col_map["barangay"])["risk_probability"].mean().round(4)
+        risk_summary = risk_summary.sort_values("Mean Prob", ascending=False)
+        
+        fig_risk = px.bar(risk_summary.reset_index(), x="Mean Prob", y=col_map["barangay"], orientation="h",
+                          title="Mean Predicted Risk Probability by Barangay",
+                          color="Mean Prob", color_continuous_scale="Oranges")
+        st.plotly_chart(fig_risk, use_container_width=True)
+        
+        st.dataframe(risk_summary, use_container_width=True)
 
-        fig, ax = plt.subplots(figsize=(10, max(3.5, len(risk_summary) * 0.42)))
-        plot_df = risk_summary.sort_values("Mean Probability", ascending=True)
-        bars = ax.barh(plot_df.index, plot_df["Mean Probability"],
-                       color=PALETTE["warning"], height=0.65)
-        for bar, v in zip(bars, plot_df["Mean Probability"].values):
-            ax.text(bar.get_width() + 0.01, bar.get_y() + bar.get_height() / 2,
-                    f"{v:.3f}", va="center", fontsize=9, color="#64748B")
-        ax.set_xlabel("Mean predicted probability")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-
-        with st.expander("risk table by barangay", expanded=True):
-            st.dataframe(risk_summary, use_container_width=True)
-
-        top = risk_summary.index[0]
-        insight(
-            "highest mean predicted probability in <b>" + str(top) +
-            "</b> at <b>" + f"{risk_summary.loc[top, 'Mean Probability']:.4f}" +
-            "</b>; best model for scoring is <b>" + best_combined + "</b>."
-        )
-
-    st.markdown("## Predicted Risk Distribution")
-    dist = scored["predicted_label"].value_counts()
-    col_a, col_b = st.columns([2, 3])
-    with col_a:
-        fig, ax = plt.subplots(figsize=(4.2, 4))
-        ax.pie(dist.values, labels=dist.index, autopct="%1.1f%%",
-               colors=[PALETTE["accent"], PALETTE["success"]][:len(dist)],
-               startangle=90,
-               wedgeprops=dict(width=0.42, edgecolor="white", linewidth=2),
-               textprops=dict(color="#1E293B", fontsize=9))
-        ax.set_title("Predicted nutritional risk")
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-    with col_b:
-        st.dataframe(dist.rename("count").to_frame(),
-                     use_container_width=True)
-
-    st.markdown("## Record-Level Predictions")
-    show_cols = []
-    for key in ("barangay", "sex", "age", "weight", "height"):
-        if col_map[key]:
-            show_cols.append(col_map[key])
-    if show_cols:
-        view = scored[show_cols + ["malnourished", "risk_probability",
-                                   "predicted_label"]].sort_values(
-            "risk_probability", ascending=False
-        )
-        with st.expander("highest predicted risk records first", expanded=True):
-            st.dataframe(view.head(20), use_container_width=True)
-
-    st.markdown("## Downloads")
-    export_cols = show_cols + ["malnourished", "risk_probability", "predicted_label"]
+    st.markdown("### Download Predictions")
+    export_cols = [col_map["barangay"], col_map["sex"], col_map["age"], "malnourished", "risk_probability", "predicted_label"]
     export = scored[export_cols].copy()
     st.download_button(
         "Download per-child predictions CSV",
@@ -1222,15 +828,3 @@ with decision_tab:
         "per_child_predictions.csv",
         "text/csv"
     )
-
-st.markdown(
-    '<div class="app-footer">'
-    + "model scores — "
-    + " | ".join(
-        f"{name}: F1 {metrics.loc[name, 'F1-Score']:.4f}, "
-        f"Recall {metrics.loc[name, 'Recall']:.4f}"
-        for name in metrics.index
-    )
-    + '</div>',
-    unsafe_allow_html=True
-)
