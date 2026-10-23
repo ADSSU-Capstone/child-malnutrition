@@ -802,7 +802,7 @@ with tab5:
 
     scored = df_model.copy()
     scored["risk_probability"] = full_proba
-    scored["predicted_label"] = full_pred.map({1: "At Risk", 0: "Not At Risk"})
+    scored["predicted_label"] = np.where(full_pred == 1, "At Risk", "Not At Risk")
 
     if col_map["barangay"]:
         risk_summary = scored.groupby(col_map["barangay"])["predicted_label"].value_counts().unstack(fill_value=0)
