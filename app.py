@@ -593,7 +593,7 @@ with tab1:
     map_data["lat"] = map_data[col_map["barangay"]].map(lambda x: BARANGAY_COORDS.get(x, (8.1, 126.0))[0])
     map_data["lon"] = map_data[col_map["barangay"]].map(lambda x: BARANGAY_COORDS.get(x, (8.1, 126.0))[1])
     
-     fig_map = px.scatter_map(
+    fig_map = px.scatter_map(
         map_data, lat="lat", lon="lon", size="Total", color="Malnutrition Rate (%)",
         hover_name=col_map["barangay"], color_continuous_scale="Reds",
         size_max=30, height=400, title="Malnutrition Rate Across Barangays (Darker Red = Higher Rate)"
